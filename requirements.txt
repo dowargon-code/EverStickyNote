@@ -1,0 +1,3 @@
+PySide6>=6.6
+evernote3==1.25.14
+thrift>=0.16
