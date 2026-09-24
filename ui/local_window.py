@@ -115,6 +115,8 @@ class LocalMainWindow(QWidget):
         self._flicker_notes: set[str] = set()
         self._flicker_seconds = 5.0
         self._close_after_flicker = True
+        self._force_close = False
+        self._closed = False
         # <--- 2026/09/24 変更
         self._window_notebooks: dict[str, str] = {}
         self._threads: list = []
@@ -345,7 +347,10 @@ class LocalMainWindow(QWidget):
     def _close_disallowed(self) -> None:
         for note_id, notebook_id in list(self._window_notebooks.items()):
             if notebook_id not in self._allowed_notebook_ids:
-                self.close_sticky(note_id)
+                # self.close_sticky(note_id)
+                # 2026/09/24 変更 ---＞
+                self._hide_sticky(note_id)
+                # <--- 2026/09/24 変更
 
     def _on_notebook_changed(self, index: int) -> None:
         notebook_id = self.notebook_combo.itemData(index)
@@ -374,6 +379,8 @@ class LocalMainWindow(QWidget):
             #     if note.id in self._windows or self._store.get_note_state(note.id).is_open
             # ]
             # 2026/09/24 変更 ---＞
+            listed = {note.id for note in notes}
+            self._remove_deleted_notes(notebook_id, listed, gen)
             open_ids = [
                 note.id
                 for note in notes
@@ -395,10 +402,18 @@ class LocalMainWindow(QWidget):
         if note_id:
             self.open_note(note_id)
 
+    # def close_selected(self) -> None:
+    #     note_id = self._selected_id()
+    #     if note_id:
+    #         self.close_sticky(note_id)
+    # 2026/09/24 変更 ---＞
     def close_selected(self) -> None:
         note_id = self._selected_id()
-        if note_id:
+        if note_id and note_id in self._windows:
             self.close_sticky(note_id)
+            return
+        self.showMinimized()
+    # <--- 2026/09/24 変更
 
     def _open_item(self, item: QListWidgetItem) -> None:
         note_id = item.data(Qt.ItemDataRole.UserRole)
@@ -442,6 +457,8 @@ class LocalMainWindow(QWidget):
         self._submit(work, ok, self._on_error)
 
     def show_note(self, note: LocalNote) -> None:
+        if self._closed:
+            return
         window = self._windows.get(note.id)
         if window is None:
             state = self._store.get_note_state(note.id)
@@ -467,6 +484,7 @@ class LocalMainWindow(QWidget):
                 window.place(saved.x, saved.y, saved.width, saved.height, len(self._windows) - 1)
             # <--- 2026/09/23 変更
             window.show()
+            self._save_geometry(note.id)
             # changed = False
             # 2026/09/24 変更 ---＞
             changed = note.id in self._temporary_notes or note.id in self._flicker_notes
@@ -536,7 +554,29 @@ class LocalMainWindow(QWidget):
     #         self._window_notebooks.pop(note_id, None)
     #     self._fill_list()
     # 2026/09/24 変更 ---＞
+    # def close_sticky(self, note_id: str) -> None:
+    #     window = self._windows.get(note_id)
+    #     if window is not None:
+    #         self._save_geometry(note_id)
+    #         self._set_note_visible(note_id, False)
+    #         state = self._store.get_note_state(note_id)
+    #         state.is_open = False
+    #         self._store.save_note_state(state)
+    #         window.hide()
+    #         window.deleteLater()
+    #         del self._windows[note_id]
+    #         self._window_notebooks.pop(note_id, None)
+    #     self._fill_list()
+    # 2026/09/24 変更 ---＞
     def close_sticky(self, note_id: str) -> None:
+        window = self._windows.get(note_id)
+        if window is None:
+            return
+        self._save_geometry(note_id)
+        window.showMinimized()
+        self._fill_list()
+
+    def _hide_sticky(self, note_id: str) -> None:
         window = self._windows.get(note_id)
         if window is not None:
             self._save_geometry(note_id)
@@ -549,6 +589,61 @@ class LocalMainWindow(QWidget):
             del self._windows[note_id]
             self._window_notebooks.pop(note_id, None)
         self._fill_list()
+    # <--- 2026/09/24 変更
+
+    # 2026/09/24 変更 ---＞
+    def _remove_deleted_notes(self, notebook_id: str, listed: set[str], generation: int) -> None:
+        for note_id, owner in list(self._window_notebooks.items()):
+            if owner == notebook_id and note_id not in listed:
+                self._remove_note_display(note_id)
+        orphans = [
+            note_id
+            for note_id in self._layout.notes
+            if note_id not in listed and note_id not in self._windows
+        ]
+        if orphans:
+            self._drop_missing_notes(orphans, generation)
+
+    def _drop_missing_notes(self, note_ids: list[str], generation: int) -> None:
+        def work(ids=list(note_ids)):
+            missing = []
+            for note_id in ids:
+                try:
+                    note = self._reader.get_note(note_id)
+                except LocalEvernoteError:
+                    missing.append(note_id)
+                else:
+                    if note.notebook_id not in self._allowed_notebook_ids:
+                        missing.append(note_id)
+            return missing
+
+        def ok(missing, gen=generation):
+            if gen != self._generation:
+                return
+            for note_id in missing:
+                self._remove_note_display(note_id)
+
+        self._submit(work, ok, self._on_error)
+
+    def _remove_note_display(self, note_id: str) -> None:
+        if self._closed:
+            return
+        window = self._windows.pop(note_id, None)
+        self._window_notebooks.pop(note_id, None)
+        self._seen_content.pop(note_id, None)
+        self._temporary_notes.discard(note_id)
+        self._flicker_notes.discard(note_id)
+        if window is not None:
+            window.hide()
+            window.deleteLater()
+        if note_id in self._layout.notes:
+            del self._layout.notes[note_id]
+            save_layout(self._position_path, self._layout)
+        state = self._store.get_note_state(note_id)
+        state.is_open = False
+        self._store.save_note_state(state)
+        self._fill_list()
+    # <--- 2026/09/24 変更
 
     def _consider_hidden_update(self, note: LocalNote) -> None:
         current = (note.title, note.text)
@@ -577,7 +672,10 @@ class LocalMainWindow(QWidget):
         self._refresh_flicker_settings()
         self._temporary_notes.discard(note_id)
         if self._close_after_flicker:
-            self.close_sticky(note_id)
+            # self.close_sticky(note_id)
+            # 2026/09/24 変更 ---＞
+            self._hide_sticky(note_id)
+            # <--- 2026/09/24 変更
             return
         self._set_note_visible(note_id, True)
         # <--- 2026/09/24 変更
@@ -593,11 +691,18 @@ class LocalMainWindow(QWidget):
         saved = self._layout.notes.get(note_id)
         return saved is not None and not saved.visible
 
+    # def _note_should_show(self, note_id: str) -> bool:
+    #     saved = self._layout.notes.get(note_id)
+    #     if saved is not None:
+    #         return saved.visible
+    #     return self._store.get_note_state(note_id).is_open
+    # 2026/09/24 変更 ---＞
     def _note_should_show(self, note_id: str) -> bool:
         saved = self._layout.notes.get(note_id)
         if saved is not None:
             return saved.visible
-        return self._store.get_note_state(note_id).is_open
+        return True
+    # <--- 2026/09/24 変更
 
     def _set_note_visible(self, note_id: str, visible: bool) -> None:
         saved = self._layout.notes.get(note_id)
@@ -651,6 +756,8 @@ class LocalMainWindow(QWidget):
     #     self._store.save_note_state(state)
     # 2026/09/23 変更 ---＞
     def _save_geometry(self, note_id: str) -> None:
+        if self._closed:
+            return
         window = self._windows.get(note_id)
         if window is None:
             return
@@ -760,6 +867,14 @@ class LocalMainWindow(QWidget):
     #     super().closeEvent(event)
     # 2026/09/24 変更 ---＞
     def closeEvent(self, event):
+        # 2026/09/24 変更 ---＞
+        if not self._force_close:
+            event.ignore()
+            self.showMinimized()
+            self._remember_minimized(True)
+            return
+        self._closed = True
+        # <--- 2026/09/24 変更
         self._timer.stop()
         self._remember_minimized(self.isMinimized())
         # for note_id in list(self._windows):

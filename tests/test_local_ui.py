@@ -9,7 +9,7 @@ from PySide6.QtCore import QEvent, QEventLoop, QPointF, Qt, QTimer
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
-from local_notes import LocalNote, LocalNoteSummary, LocalNotebook
+from local_notes import LocalEvernoteError, LocalNote, LocalNoteSummary, LocalNotebook
 from local_store import LocalStore
 from ui.local_window import LocalMainWindow
 
@@ -46,6 +46,7 @@ def wait_until(predicate, timeout_ms=3000):
 class FakeReader:
     def __init__(self):
         self.bodies = {"n1": "本文です", "secret": "見えない"}
+        self.removed: set[str] = set()
 
     def open(self):
         return None
@@ -58,10 +59,14 @@ class FakeReader:
 
     def list_notes(self, notebook_id):
         if notebook_id == "other":
-            return [LocalNoteSummary("secret", "秘密", notebook_id)]
-        return [LocalNoteSummary("n1", "題", notebook_id)]
+            notes = [LocalNoteSummary("secret", "秘密", notebook_id)]
+        else:
+            notes = [LocalNoteSummary("n1", "題", notebook_id)]
+        return [note for note in notes if note.id not in self.removed]
 
     def get_note(self, note_id):
+        if note_id in self.removed or note_id not in self.bodies:
+            raise LocalEvernoteError("ノートが見つかりません")
         if note_id == "secret":
             return LocalNote(note_id, "秘密", self.bodies.get(note_id, "見えない"), "other")
         return LocalNote(note_id, "題", self.bodies.get(note_id, "本文です"), "nb")
@@ -103,6 +108,7 @@ class LocalWindowTests(unittest.TestCase):
 
     def tearDown(self):
         for window in self.windows:
+            window._force_close = True
             window.close()
         for _ in range(20):
             QApplication.processEvents()
@@ -125,9 +131,9 @@ class LocalWindowTests(unittest.TestCase):
         self.assertTrue(sticky.body_edit.isReadOnly())
         self.assertTrue(sticky.banner.isHidden())
         sticky.close_button.click()
-        self.assertNotIn("n1", self.window._windows)
-        self.assertFalse(self.store.get_note_state("n1").is_open)
-        self.assertFalse(self.window._layout.notes["n1"].visible)
+        self.assertIn("n1", self.window._windows)
+        self.assertTrue(sticky.isMinimized())
+        self.assertTrue(self.window._layout.notes["n1"].visible)
 
     def test_double_click_on_the_drag_area_opens_the_evernote_note(self):
         wait_until(lambda: self.window.note_list.count() == 1)
@@ -156,6 +162,7 @@ class LocalWindowTests(unittest.TestCase):
         sticky.move(320, 180)
         sticky.resize(360, 240)
         self.window._save_geometry("n1")
+        self.window._force_close = True
         self.window.close()
 
         again = self._open_window()
@@ -173,6 +180,7 @@ class LocalWindowTests(unittest.TestCase):
         self.window.show()
         self.window.showMinimized()
         self.assertTrue(self.window.isMinimized())
+        self.window._force_close = True
         self.window.close()
 
         again = self._open_window()
@@ -205,7 +213,7 @@ class LocalWindowTests(unittest.TestCase):
         wait_until(lambda: self.window.note_list.count() == 1 and not self.window._threads)
         self.window.open_note("n1")
         wait_until(lambda: "n1" in self.window._windows)
-        self.window.close_sticky("n1")
+        self.window._hide_sticky("n1")
         self.assertFalse(self.window._layout.notes["n1"].visible)
         self.reader.bodies["n1"] = "更新後"
         self._stamp_value = 1
@@ -227,7 +235,7 @@ class LocalWindowTests(unittest.TestCase):
         wait_until(lambda: self.window.note_list.count() == 1 and not self.window._threads)
         self.window.open_note("n1")
         wait_until(lambda: "n1" in self.window._windows)
-        self.window.close_sticky("n1")
+        self.window._hide_sticky("n1")
         self.assertNotIn("n1", self.window._windows)
         self.reader.bodies["n1"] = "更新後"
         self._stamp_value = 1
@@ -248,6 +256,26 @@ class LocalWindowTests(unittest.TestCase):
         text = self.config_path.read_text(encoding="utf-8")
         self.assertIn("launch_at_startup = true", text)
         self.assertEqual(self.startup_calls[-1], True)
+
+    def test_new_note_opens_as_visible(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        self.assertTrue(self.window._layout.notes["n1"].visible)
+
+    def test_deleted_note_removes_the_sticky(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        self.assertIn("n1", self.window._layout.notes)
+        self.reader.removed.add("n1")
+        self.reader.bodies.pop("n1", None)
+        self._stamp_value = 1
+        self.window._watch()
+        wait_until(lambda: "n1" not in self.window._windows and not self.window._threads)
+        self.assertNotIn("n1", self.window._layout.notes)
+
+    def test_main_close_button_minimizes(self):
+        self.window.show()
+        self.window.close()
+        self.assertTrue(self.window.isMinimized())
+        self.assertFalse(self.window._force_close)
 
 
 if __name__ == "__main__":
