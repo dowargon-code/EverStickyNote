@@ -7,6 +7,8 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from app_icon import app_icon
+
 # from ui.main_window import MainWindow
 # 2026/09/23 変更 ---＞
 from ui.local_window import LocalMainWindow
@@ -16,6 +18,9 @@ from ui.local_window import LocalMainWindow
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("EverStickyNote")
+    # 2026/09/24 変更 ---＞
+    app.setWindowIcon(app_icon())
+    # <--- 2026/09/24 変更
     # window = MainWindow()
     # 2026/09/23 変更 ---＞
     window = LocalMainWindow()

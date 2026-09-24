@@ -44,6 +44,9 @@ def wait_until(predicate, timeout_ms=3000):
 
 
 class FakeReader:
+    def __init__(self):
+        self.bodies = {"n1": "本文です", "secret": "見えない"}
+
     def open(self):
         return None
 
@@ -60,8 +63,8 @@ class FakeReader:
 
     def get_note(self, note_id):
         if note_id == "secret":
-            return LocalNote(note_id, "秘密", "見えない", "other")
-        return LocalNote(note_id, "題", "本文です", "nb")
+            return LocalNote(note_id, "秘密", self.bodies.get(note_id, "見えない"), "other")
+        return LocalNote(note_id, "題", self.bodies.get(note_id, "本文です"), "nb")
 
     def note_app_url(self, note_id):
         return f"evernote:///view/1/s1/{note_id}/nb"
@@ -81,6 +84,8 @@ class LocalWindowTests(unittest.TestCase):
         self.reader = FakeReader()
         self.opened_urls: list[str] = []
         self.windows: list[LocalMainWindow] = []
+        self._stamp_value = 0
+        self.startup_calls: list[bool] = []
         self.window = self._open_window()
 
     def _open_window(self) -> LocalMainWindow:
@@ -90,6 +95,8 @@ class LocalWindowTests(unittest.TestCase):
             config_path=self.config_path,
             url_opener=self.opened_urls.append,
             position_path=self.position_path,
+            stamp=lambda: self._stamp_value,
+            startup_apply=self.startup_calls.append,
         )
         self.windows.append(window)
         return window
@@ -120,6 +127,7 @@ class LocalWindowTests(unittest.TestCase):
         sticky.close_button.click()
         self.assertNotIn("n1", self.window._windows)
         self.assertFalse(self.store.get_note_state("n1").is_open)
+        self.assertFalse(self.window._layout.notes["n1"].visible)
 
     def test_double_click_on_the_drag_area_opens_the_evernote_note(self):
         wait_until(lambda: self.window.note_list.count() == 1)
@@ -171,7 +179,75 @@ class LocalWindowTests(unittest.TestCase):
         wait_until(lambda: again.note_list.count() == 1)
         again.show_saved_state()
         self.assertTrue(again.isMinimized())
+        sticky = again._windows.get("n1")
+        if sticky is None:
+            again.open_note("n1")
+            wait_until(lambda: "n1" in again._windows)
+            sticky = again._windows["n1"]
+        sticky.mainRequested.emit("n1")
+        self.assertFalse(again.isMinimized())
         again.close()
+
+    def test_watch_reloads_only_when_the_database_stamp_changes(self):
+        wait_until(lambda: self.window.note_list.count() == 1 and not self.window._threads)
+        self.assertEqual(self.window._watch_seconds, 2)
+        self.assertEqual(self.window._watched_stamp, 0)
+        generation = self.window._generation
+        self.window._watch()
+        self.assertEqual(self.window._generation, generation)
+        self._stamp_value = 1
+        self.window._watch()
+        wait_until(lambda: self.window._watched_stamp == 1 and not self.window._threads)
+        self.assertGreater(self.window._generation, generation)
+        self.assertEqual(self.window.note_list.count(), 1)
+
+    def test_hidden_note_appears_only_while_its_update_flickers(self):
+        wait_until(lambda: self.window.note_list.count() == 1 and not self.window._threads)
+        self.window.open_note("n1")
+        wait_until(lambda: "n1" in self.window._windows)
+        self.window.close_sticky("n1")
+        self.assertFalse(self.window._layout.notes["n1"].visible)
+        self.reader.bodies["n1"] = "更新後"
+        self._stamp_value = 1
+        self.window._watch()
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        sticky = self.window._windows["n1"]
+        self.assertIn("3px solid", sticky.styleSheet())
+        self.assertFalse(self.window._layout.notes["n1"].visible)
+        sticky._flicker_elapsed = 5000
+        sticky._tick_update_flicker()
+        self.assertNotIn("n1", self.window._windows)
+        self.assertFalse(self.window._layout.notes["n1"].visible)
+
+    def test_hidden_note_stays_open_when_close_after_flicker_is_off(self):
+        self.config_path.write_text(
+            'notebooks = ["仕事"]\nflicker_seconds = 1\nclose_after_flicker = false\n',
+            encoding="utf-8",
+        )
+        wait_until(lambda: self.window.note_list.count() == 1 and not self.window._threads)
+        self.window.open_note("n1")
+        wait_until(lambda: "n1" in self.window._windows)
+        self.window.close_sticky("n1")
+        self.assertNotIn("n1", self.window._windows)
+        self.reader.bodies["n1"] = "更新後"
+        self._stamp_value = 1
+        self.window._watch()
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        sticky = self.window._windows["n1"]
+        self.assertEqual(sticky._flicker_limit_ms, 1000)
+        self.assertTrue(self.window._layout.notes["n1"].visible)
+        sticky._flicker_elapsed = 1000
+        sticky._tick_update_flicker()
+        self.assertIn("n1", self.window._windows)
+        self.assertTrue(self.window._layout.notes["n1"].visible)
+
+    def test_startup_checkbox_saves_the_toml_setting(self):
+        wait_until(lambda: self.window.note_list.count() == 1)
+        self.assertFalse(self.window.startup_check.isChecked())
+        self.window.startup_check.setChecked(True)
+        text = self.config_path.read_text(encoding="utf-8")
+        self.assertIn("launch_at_startup = true", text)
+        self.assertEqual(self.startup_calls[-1], True)
 
 
 if __name__ == "__main__":

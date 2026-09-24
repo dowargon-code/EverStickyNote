@@ -65,6 +65,18 @@ def find_database(base_dir: Path) -> Path:
     return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
+def database_stamp(base_dir: Path | None = None) -> tuple:
+    """Identity of the live database files, without copying them."""
+    source = find_database(base_dir or default_base_dir())
+    stamps = []
+    for path in (source, Path(str(source) + "-wal"), Path(str(source) + "-shm")):
+        if not path.exists():
+            continue
+        stat = path.stat()
+        stamps.append((str(path), stat.st_mtime_ns, stat.st_size))
+    return tuple(stamps)
+
+
 def _remove_sqlite_files(path: Path) -> None:
     for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
         try:

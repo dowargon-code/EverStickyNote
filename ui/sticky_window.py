@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+
+from app_icon import app_icon
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QSizeGrip,
     QTextEdit,
@@ -24,6 +27,32 @@ COLORS = {
     "gray": ("#e6e6e6", "#222222"),
 }
 COLOR_ORDER = list(COLORS)
+
+
+def arrange_positions(
+    sizes: list[tuple[int, int]],
+    area: tuple[int, int, int, int],
+    ratio: float = 0.7,
+    margin: int = 8,
+) -> list[tuple[int, int]]:
+    """Place windows from the top-right, down the main screen, then left."""
+    left, top, width, height = area
+    screen_right = left + width
+    bottom_limit = top + int(height * ratio)
+    column_right = screen_right - margin
+    column_left = column_right
+    y = top + margin
+    positions: list[tuple[int, int]] = []
+    for item_width, item_height in sizes:
+        if y + item_height > bottom_limit and y > top + margin:
+            column_right = column_left - margin
+            column_left = column_right
+            y = top + margin
+        x = column_right - item_width
+        positions.append((x, y))
+        column_left = min(column_left, x)
+        y += item_height + margin
+    return positions
 
 
 # class DragHandle(QLabel):
@@ -97,7 +126,12 @@ class StickyWindow(QWidget):
     pullRequested = Signal(str)
     # 2026/09/23 変更 ---＞
     openRequested = Signal(str)
+    arrangeRequested = Signal(str)
+    mainRequested = Signal(str)
     # <--- 2026/09/23 変更
+    # 2026/09/24 変更 ---＞
+    updateNoticeFinished = Signal(str)
+    # <--- 2026/09/24 変更
 
     def __init__(self, guid: str, color: str = "yellow", pinned: bool = True):
         super().__init__()
@@ -105,6 +139,15 @@ class StickyWindow(QWidget):
         self._color = color if color in COLORS else "yellow"
         self._pinned = pinned
         self._rich = False
+        self._updated = False
+        # 2026/09/24 変更 ---＞
+        self._flicker_on = False
+        self._flicker_elapsed = 0
+        self._flicker_limit_ms = 5000
+        self._flicker_timer = QTimer(self)
+        self._flicker_timer.setInterval(250)
+        self._flicker_timer.timeout.connect(self._tick_update_flicker)
+        # <--- 2026/09/24 変更
         self.setObjectName("stickyRoot")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMinimumSize(240, 200)
@@ -118,6 +161,9 @@ class StickyWindow(QWidget):
         if self._pinned:
             flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
+        # 2026/09/24 変更 ---＞
+        self.setWindowIcon(app_icon())
+        # <--- 2026/09/24 変更
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
@@ -147,6 +193,12 @@ class StickyWindow(QWidget):
         self.title_edit.textChanged.connect(self._on_title_changed)
         bar_layout.addWidget(self.title_edit, 1)
 
+        # 2026/09/24 変更 ---＞
+        self.arrange_button = QPushButton("整列")
+        self.arrange_button.clicked.connect(lambda: self.arrangeRequested.emit(self.guid))
+        bar_layout.addWidget(self.arrange_button)
+        # <--- 2026/09/24 変更
+
         self.color_button = QPushButton("色")
         self.color_button.setFixedWidth(36)
         self.color_button.clicked.connect(self._cycle_color)
@@ -168,8 +220,19 @@ class StickyWindow(QWidget):
         self.close_button.clicked.connect(lambda: self.closeRequested.emit(self.guid))
         bar_layout.addWidget(self.close_button)
         # 2026/09/23 変更 ---＞
-        for button in (self.color_button, self.pin_button, self.close_button):
+        # for button in (self.color_button, self.pin_button, self.close_button):
+        #     button.setCursor(Qt.CursorShape.ArrowCursor)
+        # 2026/09/24 変更 ---＞
+        for button in (self.arrange_button, self.color_button, self.pin_button, self.close_button):
             button.setCursor(Qt.CursorShape.ArrowCursor)
+        self._header_buttons = (
+            self.arrange_button,
+            self.color_button,
+            self.pin_button,
+            self.close_button,
+        )
+        self._set_header_buttons_visible(False)
+        # <--- 2026/09/24 変更
         # <--- 2026/09/23 変更
         root.addWidget(self._bar)
 
@@ -188,6 +251,11 @@ class StickyWindow(QWidget):
         self.body_edit.setFont(QFont("Yu Gothic UI", 10))
         self.body_edit.textChanged.connect(self._emit_edited)
         root.addWidget(self.body_edit, 1)
+        # 2026/09/24 変更 ---＞
+        for widget in (self, self._bar, self.title_edit, self.body_edit):
+            widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            widget.customContextMenuRequested.connect(self._popup_main_menu)
+        # <--- 2026/09/24 変更
 
         grip_row = QHBoxLayout()
         grip_row.addStretch(1)
@@ -195,14 +263,86 @@ class StickyWindow(QWidget):
         grip_row.addWidget(self._grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
         root.addLayout(grip_row)
 
+    def _set_header_buttons_visible(self, visible: bool) -> None:
+        for button in self._header_buttons:
+            button.setVisible(visible)
+
+    def enterEvent(self, event):
+        self._set_header_buttons_visible(True)
+        # # 2026/09/24 変更 ---＞
+        # if self._updated:
+        #     self._updated = False
+        #     self._apply_style()
+        # # <--- 2026/09/24 変更
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._set_header_buttons_visible(False)
+        super().leaveEvent(event)
+
+    # def _apply_style(self) -> None:
+    #     background, foreground = COLORS[self._color]
+    #     self.setStyleSheet(
+    #         f"""
+    #         QWidget#stickyRoot {{
+    #             background: {background};
+    #             color: {foreground};
+    #             border: 1px solid rgba(0, 0, 0, 90);
+    #         }}
+    #         ...
+    #         """
+    #     )
+    # 2026/09/24 変更 ---＞
+    # def mark_updated(self) -> None:
+    #     self._updated = True
+    #     self._flicker_on = True
+    #     self._flicker_elapsed = 0
+    #     self._apply_style()
+    #     self._flicker_timer.start()
+    # 2026/09/24 変更 ---＞
+    def mark_updated(self, seconds: float = 5) -> None:
+        self._updated = True
+        self._flicker_on = True
+        self._flicker_elapsed = 0
+        self._flicker_limit_ms = max(0, int(seconds * 1000))
+        self._apply_style()
+        if self._flicker_limit_ms <= 0:
+            self._finish_update_flicker()
+            return
+        self._flicker_timer.start()
+
+    def _tick_update_flicker(self) -> None:
+        self._flicker_elapsed += self._flicker_timer.interval()
+        if self._flicker_elapsed >= self._flicker_limit_ms:
+            self._finish_update_flicker()
+            return
+        self._flicker_on = not self._flicker_on
+        self._apply_style()
+
+    def _finish_update_flicker(self) -> None:
+        self._flicker_timer.stop()
+        self._updated = False
+        self._flicker_on = False
+        self._apply_style()
+        self.updateNoticeFinished.emit(self.guid)
+    # <--- 2026/09/24 変更
+
     def _apply_style(self) -> None:
         background, foreground = COLORS[self._color]
+        # border = "3px solid #e07000" if self._updated else "1px solid rgba(0, 0, 0, 90)"
+        # 2026/09/24 変更 ---＞
+        border = (
+            "3px solid #e07000"
+            if self._updated and self._flicker_on
+            else "1px solid rgba(0, 0, 0, 90)"
+        )
+        # <--- 2026/09/24 変更
         self.setStyleSheet(
             f"""
             QWidget#stickyRoot {{
                 background: {background};
                 color: {foreground};
-                border: 1px solid rgba(0, 0, 0, 90);
+                border: {border};
             }}
             QLineEdit, QTextEdit {{
                 background: transparent;
@@ -220,6 +360,15 @@ class StickyWindow(QWidget):
             }}
             """
         )
+    # <--- 2026/09/24 変更
+
+    def _popup_main_menu(self, pos) -> None:
+        widget = self.sender()
+        if not isinstance(widget, QWidget):
+            widget = self
+        menu = QMenu(self)
+        menu.addAction("メインフォームを開く", lambda: self.mainRequested.emit(self.guid))
+        menu.exec(widget.mapToGlobal(pos))
 
     def note_title(self) -> str:
         return self.title_edit.text()

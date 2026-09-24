@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,7 @@ class NotePosition:
     y: int
     width: int
     height: int
+    visible: bool = True
 
 
 @dataclass
@@ -23,7 +25,12 @@ class WindowLayout:
 
 
 def default_position_path() -> Path:
+    # return Path(__file__).resolve().parent / "position.toml"
+    # 2026/09/24 変更 ---＞
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "position.toml"
     return Path(__file__).resolve().parent / "position.toml"
+    # <--- 2026/09/24 変更
 
 
 def load_layout(path: Path) -> WindowLayout:
@@ -62,7 +69,10 @@ def _note_position(raw: object) -> NotePosition | None:
         values.append(value)
     if values[2] < 1 or values[3] < 1:
         return None
-    return NotePosition(*values)
+    visible = raw.get("visible", True)
+    if not isinstance(visible, bool):
+        return None
+    return NotePosition(*values, visible=visible)
 
 
 def _render(layout: WindowLayout) -> str:
@@ -77,6 +87,7 @@ def _render(layout: WindowLayout) -> str:
         lines.append(f"y = {position.y}")
         lines.append(f"width = {position.width}")
         lines.append(f"height = {position.height}")
+        lines.append(f"visible = {'true' if position.visible else 'false'}")
         lines.append("")
     return "\n".join(lines)
 

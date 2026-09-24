@@ -1,3 +1,15 @@
 # 付箋として表示する Evernote のノートブック名です。
 # 名前は Evernote 上の表示名と一致させてください。複数指定できます。
 notebooks = ["2-30. 付箋"]
+
+# ローカルデータの確認間隔（秒）です。0 にすると定周期監視を止めます。
+watch_seconds = 2
+
+# Windowsにログインしたとき、このアプリを起動します。
+launch_at_startup = true
+
+# 更新を知らせる枠の点滅時間（秒）です。
+flicker_seconds = 5
+
+# 非表示だった付箋を、点滅が終わったあと再び閉じます。
+close_after_flicker = true

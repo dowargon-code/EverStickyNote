@@ -4,3 +4,5 @@ __pycache__/
 .pytest_cache/
 position.toml
 position.toml.tmp
+build/
+dist/

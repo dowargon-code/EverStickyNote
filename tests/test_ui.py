@@ -14,7 +14,7 @@ from local_store import LocalStore
 from sync import text_to_enml
 from tests.fake_store import FakeNoteStore
 from ui.main_window import MainWindow
-from ui.sticky_window import StickyWindow
+from ui.sticky_window import StickyWindow, arrange_positions
 
 
 def _app():
@@ -61,6 +61,16 @@ def wait_until(predicate, timeout_ms=3000, detail=None):
         raise AssertionError(f"timed out {extra}")
 
 
+class ArrangePositionTests(unittest.TestCase):
+    def test_stacks_from_the_top_right_then_moves_left(self):
+        positions = arrange_positions(
+            [(200, 200)] * 4,
+            (0, 0, 1000, 1000),
+        )
+        self.assertEqual(positions[:3], [(792, 8), (792, 216), (792, 424)])
+        self.assertEqual(positions[3], (584, 8))
+
+
 class StickyWindowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -81,6 +91,31 @@ class StickyWindowTests(unittest.TestCase):
         self.assertIn("Evernote側が新しい", window.banner.text())
         window.set_rich(True)
         self.assertTrue(window.body_edit.isReadOnly())
+        window.close()
+
+    def test_header_buttons_appear_only_while_the_pointer_is_over_the_note(self):
+        window = StickyWindow("note-1")
+        window.show()
+        for button in window._header_buttons:
+            self.assertTrue(button.isHidden())
+        window.enterEvent(None)
+        for button in window._header_buttons:
+            self.assertFalse(button.isHidden())
+        window.leaveEvent(None)
+        for button in window._header_buttons:
+            self.assertTrue(button.isHidden())
+        window.set_content("題", "本文")
+        window.set_content("題", "更新後")
+        window.mark_updated()
+        self.assertIn("3px solid", window.styleSheet())
+        window.enterEvent(None)
+        self.assertIn("3px solid", window.styleSheet())
+        window._tick_update_flicker()
+        self.assertIn("1px solid", window.styleSheet())
+        window._flicker_elapsed = 5000
+        window._tick_update_flicker()
+        self.assertFalse(window._flicker_timer.isActive())
+        self.assertIn("1px solid", window.styleSheet())
         window.close()
 
     def test_header_drag_moves_from_the_title(self):

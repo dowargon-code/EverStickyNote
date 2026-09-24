@@ -18,7 +18,10 @@ class WindowPositionTests(unittest.TestCase):
             save_layout(path, layout)
             loaded = load_layout(path)
         self.assertTrue(loaded.minimized)
-        self.assertEqual(loaded.notes["note-1"], NotePosition(12, -40, 300, 280))
+        self.assertEqual(loaded.notes["note-1"], NotePosition(12, -40, 300, 280, visible=True))
+        hidden = WindowLayout(notes={"note-2": NotePosition(1, 2, 300, 280, visible=False)})
+        save_layout(path, hidden)
+        self.assertFalse(load_layout(path).notes["note-2"].visible)
 
     def test_missing_file_starts_empty(self):
         with tempfile.TemporaryDirectory() as directory:
