@@ -7,13 +7,17 @@ import os
 from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
+    QMessageBox,
     QPushButton,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -80,6 +84,8 @@ class LocalMainWindow(QWidget):
         position_path=None,
         stamp=None,
         startup_apply=None,
+        confirm_exit=None,
+        quit_on_exit=None,
     ):
     # <--- 2026/09/23 変更
         super().__init__()
@@ -99,6 +105,10 @@ class LocalMainWindow(QWidget):
         self._layout = load_layout(self._position_path)
         self._stamp = stamp or database_stamp
         self._startup_apply = startup_apply or set_launch_at_startup
+        # 2026/09/25 変更 ---＞
+        self._confirm_exit = confirm_exit or self._default_confirm_exit
+        self._quit_on_exit = quit_on_exit or self._default_quit_on_exit
+        # <--- 2026/09/25 変更
         self._watched_stamp = None
         self._watch_seconds = 2.0
         self._timer = QTimer(self)
@@ -167,6 +177,9 @@ class LocalMainWindow(QWidget):
         self.status.setWordWrap(True)
         root.addWidget(self.status)
         self._load_startup_setting()
+        # 2026/09/25 変更 ---＞
+        self._setup_tray()
+        # <--- 2026/09/25 変更
 
     # def reload(self) -> None:
     #     self._generation += 1
@@ -412,13 +425,19 @@ class LocalMainWindow(QWidget):
         if note_id and note_id in self._windows:
             self.close_sticky(note_id)
             return
-        self.showMinimized()
+        # self.showMinimized()
     # <--- 2026/09/24 変更
 
     def _open_item(self, item: QListWidgetItem) -> None:
-        note_id = item.data(Qt.ItemDataRole.UserRole)
-        if note_id:
-            self.open_note(note_id)
+        # note_id = item.data(Qt.ItemDataRole.UserRole)
+        # if note_id:
+        #     self.open_note(note_id)
+        # 2026/09/25 変更 ---＞
+        if item is None:
+            return
+        self.note_list.setCurrentItem(item)
+        self.open_selected()
+        # <--- 2026/09/25 変更
 
     def open_note(self, note_id: str) -> None:
         if self._reader is None:
@@ -430,9 +449,12 @@ class LocalMainWindow(QWidget):
         # <--- 2026/09/24 変更
         window = self._windows.get(note_id)
         if window is not None:
-            window.show()
-            window.raise_()
-            window.activateWindow()
+            # window.show()
+            # window.raise_()
+            # window.activateWindow()
+            # 2026/09/25 変更 ---＞
+            self._restore_sticky_window(window)
+            # <--- 2026/09/25 変更
             self._store.set_open(note_id, True)
             self._fill_list()
             return
@@ -487,18 +509,30 @@ class LocalMainWindow(QWidget):
             self._save_geometry(note.id)
             # changed = False
             # 2026/09/24 変更 ---＞
-            changed = note.id in self._temporary_notes or note.id in self._flicker_notes
+            # changed = note.id in self._temporary_notes or note.id in self._flicker_notes
             # <--- 2026/09/24 変更
-        else:
-            changed = window.note_title() != note.title or window.note_text() != note.text
+        # else:
+        #     changed = window.note_title() != note.title or window.note_text() != note.text
+        # 2026/09/25 変更 ---＞
+        current = (note.title, note.text)
+        previous = self._seen_content.get(note.id)
+        changed = (
+            note.id in self._temporary_notes
+            or note.id in self._flicker_notes
+            or (previous is not None and previous != current)
+        )
+        # <--- 2026/09/25 変更
         # window.set_content(note.title, note.text)
         # 2026/09/24 変更 ---＞
         window.set_content(note.title, note.text)
-        self._seen_content[note.id] = (note.title, note.text)
+        self._seen_content[note.id] = current
         if changed:
             self._flicker_notes.discard(note.id)
             self._refresh_flicker_settings()
             window.mark_updated(self._flicker_seconds)
+            # 2026/09/25 変更 ---＞
+            self._restore_sticky_window(window)
+            # <--- 2026/09/25 変更
         # <--- 2026/09/24 変更
         window.set_read_only(READ_ONLY_MESSAGE)
         self._window_notebooks[note.id] = note.notebook_id
@@ -575,6 +609,30 @@ class LocalMainWindow(QWidget):
         self._save_geometry(note_id)
         window.showMinimized()
         self._fill_list()
+
+    # 2026/09/25 変更 ---＞
+    def _restore_sticky_window(self, window: StickyWindow) -> None:
+        if window.isMinimized():
+            window.showNormal()
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def _default_confirm_exit(self) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "EverStickyNote",
+            "EverStickyNote を終了しますか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _default_quit_on_exit(self) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+    # <--- 2026/09/25 変更
 
     def _hide_sticky(self, note_id: str) -> None:
         window = self._windows.get(note_id)
@@ -841,7 +899,14 @@ class LocalMainWindow(QWidget):
     def changeEvent(self, event):
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "_layout"):
-            self._remember_minimized(self.isMinimized())
+            # self._remember_minimized(self.isMinimized())
+            # 2026/09/25 変更 ---＞
+            if self.isMinimized() and not self._force_close:
+                QTimer.singleShot(0, self._hide_to_tray)
+                return
+            if not self.isMinimized():
+                self._remember_minimized(False)
+            # <--- 2026/09/25 変更
 
     # def show_saved_state(self) -> None:
     #     if self._layout.minimized:
@@ -849,13 +914,43 @@ class LocalMainWindow(QWidget):
     #     else:
     #         self.show()
     # 2026/09/24 変更 ---＞
+    # def show_saved_state(self) -> None:
+    #     self.showMinimized()
+    # 2026/09/25 変更 ---＞
     def show_saved_state(self) -> None:
-        self.showMinimized()
+        self._hide_to_tray()
 
     def show_main_form(self, _note_id: str = "") -> None:
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        self._remember_minimized(False)
+
+    def _setup_tray(self) -> None:
+        self._tray: QSystemTrayIcon | None = None
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        tray = QSystemTrayIcon(app_icon(), self)
+        tray.setToolTip("EverStickyNote")
+        menu = QMenu()
+        menu.addAction("メインフォームを開く", self.show_main_form)
+        menu.addAction("終了", self.close)
+        tray.setContextMenu(menu)
+        tray.activated.connect(self._on_tray_activated)
+        tray.show()
+        self._tray = tray
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.show_main_form()
+
+    def _hide_to_tray(self) -> None:
+        self._remember_minimized(True)
+        self.setWindowState(Qt.WindowState.WindowNoState)
+        self.hide()
+        if self._tray is not None:
+            self._tray.show()
+    # <--- 2026/09/25 変更
     # <--- 2026/09/24 変更
 
     # def closeEvent(self, event):
@@ -868,12 +963,24 @@ class LocalMainWindow(QWidget):
     # 2026/09/24 変更 ---＞
     def closeEvent(self, event):
         # 2026/09/24 変更 ---＞
+        # if not self._force_close:
+        #     event.ignore()
+        #     self.showMinimized()
+        #     self._remember_minimized(True)
+        #     return
+        # self._closed = True
+        # 2026/09/25 変更 ---＞
+        quit_app = False
         if not self._force_close:
-            event.ignore()
-            self.showMinimized()
-            self._remember_minimized(True)
-            return
-        self._closed = True
+            if not self._confirm_exit():
+                event.ignore()
+                return
+            self._force_close = True
+            self._closed = True
+            quit_app = True
+        else:
+            self._closed = True
+        # <--- 2026/09/25 変更
         # <--- 2026/09/24 変更
         self._timer.stop()
         self._remember_minimized(self.isMinimized())
@@ -890,6 +997,10 @@ class LocalMainWindow(QWidget):
         if self._reader is not None:
             self._reader.close()
         super().closeEvent(event)
+        # 2026/09/25 変更 ---＞
+        if quit_app:
+            self._quit_on_exit()
+        # <--- 2026/09/25 変更
     # <--- 2026/09/24 変更
 
     def _remember_minimized(self, minimized: bool) -> None:

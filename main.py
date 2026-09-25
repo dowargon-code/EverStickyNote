@@ -17,6 +17,9 @@ from ui.local_window import LocalMainWindow
 
 def main() -> int:
     app = QApplication(sys.argv)
+    # 2026/09/25 変更 ---＞
+    app.setQuitOnLastWindowClosed(False)
+    # <--- 2026/09/25 変更
     app.setApplicationName("EverStickyNote")
     # 2026/09/24 変更 ---＞
     app.setWindowIcon(app_icon())

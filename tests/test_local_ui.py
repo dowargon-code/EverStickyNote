@@ -102,12 +102,15 @@ class LocalWindowTests(unittest.TestCase):
             position_path=self.position_path,
             stamp=lambda: self._stamp_value,
             startup_apply=self.startup_calls.append,
+            quit_on_exit=lambda: None,
         )
         self.windows.append(window)
         return window
 
     def tearDown(self):
         for window in self.windows:
+            if window._closed:
+                continue
             window._force_close = True
             window.close()
         for _ in range(20):
@@ -174,19 +177,20 @@ class LocalWindowTests(unittest.TestCase):
         self.assertEqual(restored.y(), 180)
         self.assertEqual(restored.width(), 360)
         self.assertEqual(restored.height(), 240)
+        again._force_close = True
         again.close()
 
     def test_main_window_reopens_minimized_when_it_was_closed_minimized(self):
         self.window.show()
-        self.window.showMinimized()
-        self.assertTrue(self.window.isMinimized())
+        self.window._hide_to_tray()
+        self.assertFalse(self.window.isVisible())
         self.window._force_close = True
         self.window.close()
 
         again = self._open_window()
         wait_until(lambda: again.note_list.count() == 1)
         again.show_saved_state()
-        self.assertTrue(again.isMinimized())
+        self.assertFalse(again.isVisible())
         sticky = again._windows.get("n1")
         if sticky is None:
             again.open_note("n1")
@@ -194,6 +198,7 @@ class LocalWindowTests(unittest.TestCase):
             sticky = again._windows["n1"]
         sticky.mainRequested.emit("n1")
         self.assertFalse(again.isMinimized())
+        again._force_close = True
         again.close()
 
     def test_watch_reloads_only_when_the_database_stamp_changes(self):
@@ -271,11 +276,91 @@ class LocalWindowTests(unittest.TestCase):
         wait_until(lambda: "n1" not in self.window._windows and not self.window._threads)
         self.assertNotIn("n1", self.window._layout.notes)
 
-    def test_main_close_button_minimizes(self):
+    def test_open_restores_minimized_sticky(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        self.window.note_list.setCurrentRow(0)
+        self.window.close_sticky("n1")
+        sticky = self.window._windows["n1"]
+        self.assertTrue(sticky.isMinimized())
+        self.window.open_selected()
+        self.assertFalse(sticky.isMinimized())
+
+    def test_list_double_click_restores_minimized_sticky(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        self.window.note_list.setCurrentRow(0)
+        self.window.close_sticky("n1")
+        sticky = self.window._windows["n1"]
+        item = self.window.note_list.currentItem()
+        self.window._open_item(item)
+        self.assertFalse(sticky.isMinimized())
+
+    def test_open_shows_hidden_sticky(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        self.window.note_list.setCurrentRow(0)
+        self.window._hide_sticky("n1")
+        self.assertNotIn("n1", self.window._windows)
+        self.window.open_selected()
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        self.assertTrue(self.window._layout.notes["n1"].visible)
+
+    def test_main_close_button_minimizes_selected_sticky(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
         self.window.show()
+        self.window.note_list.setCurrentRow(0)
+        sticky = self.window._windows["n1"]
+        self.window.close_selected()
+        self.assertTrue(sticky.isMinimized())
+        self.assertTrue(self.window.isVisible())
+
+    def test_main_window_close_asks_before_quitting(self):
+        self.window.show()
+        self.window._confirm_exit = lambda: False
         self.window.close()
-        self.assertTrue(self.window.isMinimized())
         self.assertFalse(self.window._force_close)
+        self.assertFalse(self.window._closed)
+
+    def test_main_window_close_quits_when_confirmed(self):
+        self.window.show()
+        self.window._confirm_exit = lambda: True
+        self.window.close()
+        self.assertTrue(self.window._force_close)
+        self.assertTrue(self.window._closed)
+
+    def test_minimized_sticky_restores_on_update(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        sticky = self.window._windows["n1"]
+        self.window.close_sticky("n1")
+        self.assertTrue(sticky.isMinimized())
+        self.window._seen_content["n1"] = ("題", "本文です")
+        sticky._updated = False
+        sticky._flicker_timer.stop()
+        self.reader.bodies["n1"] = "更新後"
+        self.window.show_note(LocalNote("n1", "題", "更新後", "nb"))
+        self.assertFalse(sticky.isMinimized())
+        self.assertTrue(sticky._flicker_timer.isActive())
+
+    def test_visible_note_does_not_flicker_when_only_widget_text_differs(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        sticky = self.window._windows["n1"]
+        nbsp_body = "a\u00a0b"
+        self.reader.bodies["n1"] = nbsp_body
+        self.window._seen_content["n1"] = ("題", nbsp_body)
+        sticky.set_content("題", nbsp_body.replace("\u00a0", " "))
+        sticky._updated = False
+        sticky._flicker_timer.stop()
+        self.window.show_note(LocalNote("n1", "題", nbsp_body, "nb"))
+        self.assertFalse(sticky._flicker_timer.isActive())
+        self.assertFalse(sticky._updated)
+
+    def test_visible_note_flickers_when_seen_content_changes(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        sticky = self.window._windows["n1"]
+        self.window._seen_content["n1"] = ("題", "本文です")
+        sticky._updated = False
+        sticky._flicker_timer.stop()
+        self.reader.bodies["n1"] = "更新後"
+        self.window.show_note(LocalNote("n1", "題", "更新後", "nb"))
+        self.assertTrue(sticky._flicker_timer.isActive())
 
 
 if __name__ == "__main__":
