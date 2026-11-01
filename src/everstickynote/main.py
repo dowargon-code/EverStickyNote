@@ -8,6 +8,9 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from everstickynote.app_icon import app_icon
+# 2026/11/01 変更 ---＞
+from everstickynote.single_instance import SingleInstance
+# <--- 2026/11/01 変更
 
 # from ui.main_window import MainWindow
 # 2026/09/23 変更 ---＞
@@ -24,10 +27,18 @@ def main() -> int:
     # 2026/09/24 変更 ---＞
     app.setWindowIcon(app_icon())
     # <--- 2026/09/24 変更
+    # 2026/11/01 変更 ---＞
+    instance = SingleInstance(parent=app)
+    if not instance.acquire():
+        return 0
+    # <--- 2026/11/01 変更
     # window = MainWindow()
     # 2026/09/23 変更 ---＞
     window = LocalMainWindow()
     # <--- 2026/09/23 変更
+    # 2026/11/01 変更 ---＞
+    instance.activated.connect(window.show_main_form)
+    # <--- 2026/11/01 変更
     # window.show()
     # 2026/09/23 変更 ---＞
     window.show_saved_state()

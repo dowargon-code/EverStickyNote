@@ -554,6 +554,13 @@ class LocalMainWindow(QWidget):
                 windows.append(window)
         if not windows:
             return
+        # 2026/11/01 変更 ---＞
+        # 整列ボタンを押した付箋を先頭（右上）にする
+        pressed = self._windows.get(_note_id)
+        if pressed is not None and pressed in windows:
+            windows.remove(pressed)
+            windows.insert(0, pressed)
+        # <--- 2026/11/01 変更
         screen = QApplication.primaryScreen()
         if screen is None:
             return

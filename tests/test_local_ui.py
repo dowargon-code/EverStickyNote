@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 from everstickynote.local_notes import LocalEvernoteError, LocalNote, LocalNoteSummary, LocalNotebook
 from everstickynote.local_store import LocalStore
 from everstickynote.ui.local_window import LocalMainWindow
+from everstickynote.ui.sticky_window import arrange_positions
 
 
 def _app():
@@ -362,6 +363,27 @@ class LocalWindowTests(unittest.TestCase):
         self.window.show_note(LocalNote("n1", "題", "更新後", "nb"))
         self.assertTrue(sticky._flicker_timer.isActive())
 
+
+    def test_arrange_button_puts_the_pressed_sticky_at_the_top_right(self):
+        wait_until(lambda: self.window.note_list.count() == 1)
+        self.window.show_note(LocalNote("n1", "題", "本文です", "nb"))
+        self.window.show_note(LocalNote("n2", "二つ目", "本文", "nb"))
+        first = self.window._windows["n1"]
+        second = self.window._windows["n2"]
+        area = QApplication.primaryScreen().availableGeometry()
+        rect = (area.x(), area.y(), area.width(), area.height())
+
+        second.arrange_button.click()
+        slots = arrange_positions([(second.width(), second.height()), (first.width(), first.height())], rect)
+        self.assertEqual((second.x(), second.y()), slots[0])
+        self.assertEqual((first.x(), first.y()), slots[1])
+        self.assertEqual(second.x() + second.width(), area.x() + area.width() - 8)
+        self.assertEqual(second.y(), area.y() + 8)
+
+        first.arrange_button.click()
+        slots = arrange_positions([(first.width(), first.height()), (second.width(), second.height())], rect)
+        self.assertEqual((first.x(), first.y()), slots[0])
+        self.assertEqual((second.x(), second.y()), slots[1])
 
 if __name__ == "__main__":
     unittest.main()

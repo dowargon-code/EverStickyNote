@@ -28,7 +28,7 @@ EverStickyNote/
 ├── build/                      # 中間ファイル（Git 管理外）
 └── dist/                       # build.ps1 が作る（Git 管理外）
     ├── EverStickyNote/         # EverStickyNote.exe、config.toml、README.md など
-    └── EverStickyNote-v1.0.0.zip
+    └── EverStickyNote-v1.1.0.zip
 ```
 
 ## セットアップ
@@ -48,7 +48,7 @@ py -3.12 -m venv .venv
 ## テスト
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_evernote_client tests.test_local_notes tests.test_local_store tests.test_local_ui tests.test_notebook_config tests.test_sync tests.test_ui tests.test_window_position
+.\.venv\Scripts\python.exe -m unittest tests.test_single_instance tests.test_evernote_client tests.test_local_notes tests.test_local_store tests.test_local_ui tests.test_notebook_config tests.test_sync tests.test_ui tests.test_window_position
 ```
 
 ## ビルド
@@ -76,6 +76,7 @@ notebooks = ["ノートブック名"]
 ## 付箋の操作
 
 - 上の行をドラッグして移動します。ダブルクリックすると、そのノートを Evernote で開きます。
+- 「整列」で、開いている付箋を画面の右上から下へ、はみ出したら左の列へ並べます。押した付箋が先頭（右上）になります。
 - 「色」で背景色を切り替えます。
 - 「最前面」で、最前面固定のオンとオフを切り替えます。ウィンドウは閉じません。
 - 付箋の「閉じる」は、その付箋をタスクバーへ最小化します。Evernote のノートは削除しません。
@@ -83,6 +84,7 @@ notebooks = ["ノートブック名"]
 - 本体ウィンドウの「閉じる」は、一覧で選んだ付箋をタスクバーへ最小化します。
 - 本体ウィンドウはタスクバーではなくシステムトレイに格納されます。トレイアイコンをダブルクリックするか、右クリックメニューからメインフォームを開けます。
 - 本体ウィンドウの × を押すと終了確認が出ます。はいを選ぶとアプリを終了します。
+- 二重には起動しません。すでに動いているときに起動すると、動いている方のメインフォームを表示します。
 
 ## ライセンス
 
