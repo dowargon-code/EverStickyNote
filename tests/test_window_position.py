@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from window_position import NotePosition, WindowLayout, load_layout, save_layout
+from everstickynote.window_position import NotePosition, WindowLayout, load_layout, save_layout
 
 
 class WindowPositionTests(unittest.TestCase):

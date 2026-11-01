@@ -1,10 +1,10 @@
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
 .pytest_cache/
-config.toml
-position.toml
-position.toml.tmp
-build/
-dist/
-配布/
+/config.toml
+/position.toml
+/position.toml.tmp
+/build/
+/dist/

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QUrl
 
-from local_notes import (
+from everstickynote.local_notes import (
     LocalEvernote,
     LocalEvernoteError,
     display_text,

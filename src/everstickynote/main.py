@@ -7,11 +7,11 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from app_icon import app_icon
+from everstickynote.app_icon import app_icon
 
 # from ui.main_window import MainWindow
 # 2026/09/23 変更 ---＞
-from ui.local_window import LocalMainWindow
+from everstickynote.ui.local_window import LocalMainWindow
 # <--- 2026/09/23 変更
 
 

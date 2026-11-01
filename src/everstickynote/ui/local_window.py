@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from local_notes import (
+from everstickynote.local_notes import (
     LocalEvernote,
     LocalEvernoteError,
     LocalNote,
@@ -30,8 +30,8 @@ from local_notes import (
     LocalNotebook,
     database_stamp,
 )
-from local_store import LocalStore
-from notebook_config import (
+from everstickynote.local_store import LocalStore
+from everstickynote.notebook_config import (
     NotebookConfigError,
     default_config_path,
     load_close_after_flicker,
@@ -42,11 +42,11 @@ from notebook_config import (
     save_launch_at_startup,
     select_notebooks,
 )
-from ui.jobs import start_async
-from ui.sticky_window import StickyWindow, arrange_positions
-from app_icon import app_icon
-from window_position import NotePosition, default_position_path, load_layout, save_layout
-from windows_startup import set_launch_at_startup
+from everstickynote.ui.jobs import start_async
+from everstickynote.ui.sticky_window import StickyWindow, arrange_positions
+from everstickynote.app_icon import app_icon
+from everstickynote.window_position import NotePosition, default_position_path, load_layout, save_layout
+from everstickynote.windows_startup import set_launch_at_startup
 
 READ_ONLY_MESSAGE = "読み取り専用です。編集はEvernoteで行い、更新で取り込みます。"
 

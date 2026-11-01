@@ -1,8 +1,8 @@
 import unittest
 
-from evernote_client import EvernoteClient
-from spike_api import run_spike
-from sync import enml_to_text, text_to_enml
+from everstickynote.evernote_client import EvernoteClient
+from everstickynote.spike_api import run_spike
+from everstickynote.sync import enml_to_text, text_to_enml
 from tests.fake_store import FakeNoteStore
 
 

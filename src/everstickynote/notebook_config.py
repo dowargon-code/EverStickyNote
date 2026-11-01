@@ -7,7 +7,8 @@ import sys
 import tomllib
 from pathlib import Path
 
-from local_notes import LocalNotebook, display_title
+from everstickynote.local_notes import LocalNotebook, display_title
+from everstickynote.paths import app_root
 
 # TEMPLATE = """\
 # # 付箋として表示する Evernote のノートブック名です。
@@ -52,10 +53,13 @@ class NotebookConfigError(Exception):
 def default_config_path() -> Path:
     # return Path(__file__).resolve().parent / "config.toml"
     # 2026/09/24 変更 ---＞
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent / "config.toml"
-    return Path(__file__).resolve().parent / "config.toml"
+    # if getattr(sys, "frozen", False):
+    #     return Path(sys.executable).resolve().parent / "config.toml"
+    # return Path(__file__).resolve().parent / "config.toml"
     # <--- 2026/09/24 変更
+    # 2026/11/01 変更 ---＞
+    return app_root() / "config.toml"
+    # <--- 2026/11/01 変更
 
 
 def ensure_config(path: Path) -> None:

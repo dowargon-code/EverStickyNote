@@ -9,9 +9,9 @@ from PySide6.QtCore import QEvent, QEventLoop, QPointF, Qt, QTimer
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
-from local_notes import LocalEvernoteError, LocalNote, LocalNoteSummary, LocalNotebook
-from local_store import LocalStore
-from ui.local_window import LocalMainWindow
+from everstickynote.local_notes import LocalEvernoteError, LocalNote, LocalNoteSummary, LocalNotebook
+from everstickynote.local_store import LocalStore
+from everstickynote.ui.local_window import LocalMainWindow
 
 
 def _app():

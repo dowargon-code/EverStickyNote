@@ -8,6 +8,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from everstickynote.paths import app_root
+
 
 @dataclass
 class NotePosition:
@@ -27,10 +29,13 @@ class WindowLayout:
 def default_position_path() -> Path:
     # return Path(__file__).resolve().parent / "position.toml"
     # 2026/09/24 変更 ---＞
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent / "position.toml"
-    return Path(__file__).resolve().parent / "position.toml"
+    # if getattr(sys, "frozen", False):
+    #     return Path(sys.executable).resolve().parent / "position.toml"
+    # return Path(__file__).resolve().parent / "position.toml"
     # <--- 2026/09/24 変更
+    # 2026/11/01 変更 ---＞
+    return app_root() / "position.toml"
+    # <--- 2026/11/01 変更
 
 
 def load_layout(path: Path) -> WindowLayout:

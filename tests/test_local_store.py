@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from local_store import LocalStore
+from everstickynote.local_store import LocalStore
 
 
 class LocalStoreTests(unittest.TestCase):

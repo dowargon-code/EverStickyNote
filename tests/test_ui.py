@@ -9,12 +9,12 @@ from PySide6.QtCore import QEvent, QEventLoop, QPoint, Qt, QTimer
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication, QLabel
 
-from evernote_client import EvernoteClient
-from local_store import LocalStore
-from sync import text_to_enml
+from everstickynote.evernote_client import EvernoteClient
+from everstickynote.local_store import LocalStore
+from everstickynote.sync import text_to_enml
 from tests.fake_store import FakeNoteStore
-from ui.main_window import MainWindow
-from ui.sticky_window import StickyWindow, arrange_positions
+from everstickynote.ui.main_window import MainWindow
+from everstickynote.ui.sticky_window import StickyWindow, arrange_positions
 
 
 def _app():

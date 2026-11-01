@@ -1,6 +1,6 @@
 import unittest
 
-from sync import (
+from everstickynote.sync import (
     RichNoteBlocked,
     build_update_content,
     classify_remote_change,

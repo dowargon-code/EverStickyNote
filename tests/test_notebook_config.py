@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from local_notes import LocalNotebook
-from notebook_config import (
+from everstickynote.local_notes import LocalNotebook
+from everstickynote.notebook_config import (
     NotebookConfigError,
     load_close_after_flicker,
     load_flicker_seconds,

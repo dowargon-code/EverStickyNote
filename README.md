@@ -8,27 +8,70 @@ Evernote デスクトップアプリのローカルデータから、指定し�
 - ログイン済みの Evernote デスクトップアプリ
 - 64-bit の Python 3.12（PySide6 は 32-bit では入りません）
 
-## 起動
+## フォルダ構成
+
+```
+EverStickyNote/
+├── README.md
+├── pyproject.toml              # パッケージ定義（版は src/everstickynote/__init__.py）
+├── requirements.txt
+├── build.ps1                   # ビルドの入口。dist\ に配布物を作る
+├── config/                     # 配布する設定ファイルの原本（Git 管理）
+│   └── config.toml
+├── src/                        # ソースコード（Git 管理）
+│   └── everstickynote/
+│       ├── __main__.py         # python -m everstickynote の入口
+│       ├── main.py
+│       ├── ui/
+│       └── assets/             # アプリアイコン
+├── tests/
+├── build/                      # 中間ファイル（Git 管理外）
+└── dist/                       # build.ps1 が作る（Git 管理外）
+    ├── EverStickyNote/         # EverStickyNote.exe、config.toml、README.md など
+    └── EverStickyNote-v1.0.0.zip
+```
+
+## セットアップ
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe main.py
+.\.venv\Scripts\python.exe -m pip install -e .
 ```
+
+## 起動（ソースから）
+
+```powershell
+.\.venv\Scripts\python.exe -m everstickynote
+```
+
+## テスト
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_evernote_client tests.test_local_notes tests.test_local_store tests.test_local_ui tests.test_notebook_config tests.test_sync tests.test_ui tests.test_window_position
+```
+
+## ビルド
+
+```powershell
+.\build.ps1
+```
+
+`dist\EverStickyNote\` に EXE と `config.toml`（`config\` からコピー）などがそろい、その中身を固めた `dist\EverStickyNote-v<版>.zip` もできます。
 
 ## 設定
 
-`config.toml.example` を `config.toml` にコピーし、付箋として出すノートブック名を Evernote 上の表示名どおりに書きます。複数指定できます。`config.toml` は端末ごとの設定なので、リポジトリには含めません。
+設定ファイル `config.toml` は、EXE で動かすときは EXE と同じフォルダ、ソースから動かすときはプロジェクトのフォルダ（このファイルと同じ場所）から読みます。ソースから動かす場合は、原本 `config\config.toml` をコピーし、付箋として出すノートブック名を Evernote 上の表示名どおりに書きます。複数指定できます。プロジェクト直下の `config.toml` は端末ごとの設定なので、リポジトリには含めません（無ければ起動時にひな形を作ります）。
 
 ```powershell
-copy config.toml.example config.toml
+copy config\config.toml config.toml
 ```
 
 ```toml
 notebooks = ["ノートブック名"]
 ```
 
-付箋の位置と、本体をトレイに格納したかは `position.toml` に保存され、次回起動時に復元されます。このファイルは端末ごとの状態なので、リポジトリには含めません。本体はタスクバーではなく通知領域（システムトレイ）に表示します。
+付箋の位置と、本体をトレイに格納したかは `config.toml` と同じフォルダの `position.toml` に保存され、次回起動時に復元されます。このファイルは端末ごとの状態なので、リポジトリには含めません。本体はタスクバーではなく通知領域（システムトレイ）に表示します。
 
 ## 付箋の操作
 
@@ -59,7 +102,7 @@ notebooks = ["ノートブック名"]
 
 ## アプリアイコン
 
-`assets/app-icon.png` および `assets/app-icon.ico` は、作者（Dowargon）が本プロジェクト用に作成したものです。MIT License と同じ条件で、本リポジトリに含まれる範囲で利用できます。
+`src/everstickynote/assets/app-icon.png` および `src/everstickynote/assets/app-icon.ico` は、作者（Dowargon）が本プロジェクト用に作成したものです。MIT License と同じ条件で、本リポジトリに含まれる範囲で利用できます。
 
 ## 免責・商標
 

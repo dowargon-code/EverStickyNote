@@ -10,9 +10,9 @@ from __future__ import annotations
 import os
 import sys
 
-from evernote_client import EvernoteClient, EvernoteError
-from local_store import LocalStore
-from sync import enml_to_text, text_to_enml
+from everstickynote.evernote_client import EvernoteClient, EvernoteError
+from everstickynote.local_store import LocalStore
+from everstickynote.sync import enml_to_text, text_to_enml
 
 SPIKE_TITLE = "EverStickyNote API確認"
 
@@ -74,7 +74,7 @@ def main() -> int:
         client.connect()
         print(run_spike(client))
     except Exception as exc:
-        from evernote_client import format_evernote_error
+        from everstickynote.evernote_client import format_evernote_error
 
         print(format_evernote_error(exc), file=sys.stderr)
         return 1

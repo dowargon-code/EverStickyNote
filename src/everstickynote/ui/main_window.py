@@ -18,9 +18,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from evernote_client import EvernoteClient, NoteDetail, NoteSummary
-from local_store import LocalStore
-from sync import (
+from everstickynote.evernote_client import EvernoteClient, NoteDetail, NoteSummary
+from everstickynote.local_store import LocalStore
+from everstickynote.sync import (
     RichNoteBlocked,
     build_update_content,
     classify_remote_change,
@@ -28,8 +28,8 @@ from sync import (
     parse_note_body,
     text_to_enml,
 )
-from ui.jobs import start_async
-from ui.sticky_window import StickyWindow
+from everstickynote.ui.jobs import start_async
+from everstickynote.ui.sticky_window import StickyWindow
 
 POLL_MS = 60_000
 SAVE_MS = 1200

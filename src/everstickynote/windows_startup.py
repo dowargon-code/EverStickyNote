@@ -13,8 +13,11 @@ RUN_NAME = "EverStickyNote"
 def startup_command() -> str:
     if getattr(sys, "frozen", False):
         return f'"{sys.executable}"'
-    main = Path(__file__).resolve().parent / "main.py"
-    return f'"{sys.executable}" "{main}"'
+    # main = Path(__file__).resolve().parent / "main.py"
+    # return f'"{sys.executable}" "{main}"'
+    # 2026/11/01 変更 ---＞
+    return f'"{sys.executable}" -m everstickynote'
+    # <--- 2026/11/01 変更
 
 
 def set_launch_at_startup(enabled: bool, command: str | None = None) -> None:

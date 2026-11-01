@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 
-from evernote_client import format_evernote_error
+from everstickynote.evernote_client import format_evernote_error
 
 
 class _CallbackHub(QObject):
