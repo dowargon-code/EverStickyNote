@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+import re
 
-from everstickynote.app_icon import app_icon
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -18,6 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from everstickynote.app_icon import app_icon
+
 COLORS = {
     "yellow": ("#fff3a3", "#3d3200"),
     "green": ("#c8f7c5", "#123314"),
@@ -27,6 +30,118 @@ COLORS = {
     "gray": ("#e6e6e6", "#222222"),
 }
 COLOR_ORDER = list(COLORS)
+RESIZE_DEBOUNCE_MS = 200
+
+_URL_PATTERN = re.compile(
+    r"(?:https?://|evernote:///)[^\s<>\"'\u3000「」『』（）【】〈〉《》、。]+",
+    re.IGNORECASE,
+)
+
+
+def iter_urls(text: str):
+    """Yield (start, end, url) spans for clickable links in plain text."""
+    for match in _URL_PATTERN.finditer(text):
+        url = match.group(0)
+        end = match.end()
+        while url:
+            last = url[-1]
+            if last in ".,;:!?":
+                url = url[:-1]
+                end -= 1
+            elif last == ")" and url.count(")") > url.count("("):
+                url = url[:-1]
+                end -= 1
+            elif last == "]" and url.count("]") > url.count("["):
+                url = url[:-1]
+                end -= 1
+            else:
+                break
+        if "://" not in url:
+            continue
+        after_scheme = url.split("://", 1)[1].lstrip("/")
+        if not after_scheme:
+            continue
+        yield match.start(), end, url
+
+
+class _UrlHighlighter(QSyntaxHighlighter):
+    def highlightBlock(self, text: str) -> None:
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor("#1a5fb4"))
+        fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
+        for start, end, _url in iter_urls(text):
+            self.setFormat(start, end - start, fmt)
+
+
+class NoteBodyEdit(QTextEdit):
+    """QTextEdit that opens http(s)/evernote links on click when read-only."""
+
+    urlClicked = Signal(str)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._press_pos: QPoint | None = None
+        self._press_url: str | None = None
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        self._highlighter = _UrlHighlighter(self.document())
+
+    def url_at(self, pos: QPoint) -> str | None:
+        cursor = self.cursorForPosition(pos)
+        block = cursor.block()
+        if not block.isValid():
+            return None
+        offset = cursor.positionInBlock()
+        block_text = block.text()
+        for start, end, url in iter_urls(block_text):
+            if not (start <= offset <= end):
+                continue
+            rect = self.cursorRect(cursor)
+            if pos.y() < rect.top() - 2 or pos.y() > rect.bottom() + 2:
+                continue
+            if offset == start and pos.x() < rect.x() - 4:
+                continue
+            if offset == end and pos.x() > rect.x() + 4:
+                continue
+            return url
+        return None
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        if self.isReadOnly():
+            url = self.url_at(event.position().toPoint())
+            shape = Qt.CursorShape.PointingHandCursor if url else Qt.CursorShape.IBeamCursor
+            self.viewport().setCursor(shape)
+        else:
+            self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
+
+    def mousePressEvent(self, event):
+        if self.isReadOnly() and event.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = event.position().toPoint()
+            self._press_url = self.url_at(self._press_pos)
+        else:
+            self._press_pos = None
+            self._press_url = None
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if (
+            self.isReadOnly()
+            and event.button() == Qt.MouseButton.LeftButton
+            and self._press_url is not None
+            and self._press_pos is not None
+        ):
+            release_pos = event.position().toPoint()
+            moved = (release_pos - self._press_pos).manhattanLength()
+            if (
+                moved <= QApplication.startDragDistance()
+                and not self.textCursor().hasSelection()
+                and self.url_at(release_pos) == self._press_url
+            ):
+                self.urlClicked.emit(self._press_url)
+        self._press_pos = None
+        self._press_url = None
 
 
 def arrange_positions(
@@ -55,35 +170,9 @@ def arrange_positions(
     return positions
 
 
-# class DragHandle(QLabel):
-#     released = Signal()
-#
-#     def __init__(self):
-#         super().__init__("移動")
-#         self._offset: QPoint | None = None
-#         self.setCursor(Qt.CursorShape.SizeAllCursor)
-#
-#     def mousePressEvent(self, event):
-#         if event.button() == Qt.MouseButton.LeftButton:
-#             self._offset = event.globalPosition().toPoint() - self.window().frameGeometry().topLeft()
-#         super().mousePressEvent(event)
-#
-#     def mouseMoveEvent(self, event):
-#         if self._offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
-#             self.window().move(event.globalPosition().toPoint() - self._offset)
-#         super().mouseMoveEvent(event)
-#
-#     def mouseReleaseEvent(self, event):
-#         if self._offset is not None:
-#             self._offset = None
-#             self.released.emit()
-#         super().mouseReleaseEvent(event)
-# 2026/09/23 変更 ---＞
 class HeaderBar(QWidget):
     released = Signal()
-    # 2026/09/23 変更 ---＞
     doubleClicked = Signal()
-    # <--- 2026/09/23 変更
 
     def __init__(self):
         super().__init__()
@@ -107,14 +196,11 @@ class HeaderBar(QWidget):
             self.released.emit()
         super().mouseReleaseEvent(event)
 
-    # 2026/09/23 変更 ---＞
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._offset = None
             self.doubleClicked.emit()
         super().mouseDoubleClickEvent(event)
-    # <--- 2026/09/23 変更
-# <--- 2026/09/23 変更
 
 
 class StickyWindow(QWidget):
@@ -124,14 +210,12 @@ class StickyWindow(QWidget):
     pinChanged = Signal(str, bool)
     geometryChanged = Signal(str)
     pullRequested = Signal(str)
-    # 2026/09/23 変更 ---＞
     openRequested = Signal(str)
     arrangeRequested = Signal(str)
     mainRequested = Signal(str)
-    # <--- 2026/09/23 変更
-    # 2026/09/24 変更 ---＞
+    newNoteRequested = Signal(str)
     updateNoticeFinished = Signal(str)
-    # <--- 2026/09/24 変更
+    urlClicked = Signal(str)
 
     def __init__(self, guid: str, color: str = "yellow", pinned: bool = True):
         super().__init__()
@@ -140,18 +224,20 @@ class StickyWindow(QWidget):
         self._pinned = pinned
         self._rich = False
         self._updated = False
-        # 2026/09/24 変更 ---＞
         self._flicker_on = False
         self._flicker_elapsed = 0
         self._flicker_limit_ms = 5000
         self._flicker_timer = QTimer(self)
         self._flicker_timer.setInterval(250)
         self._flicker_timer.timeout.connect(self._tick_update_flicker)
-        # <--- 2026/09/24 変更
         self.setObjectName("stickyRoot")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMinimumSize(240, 200)
         self.resize(300, 280)
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(RESIZE_DEBOUNCE_MS)
+        self._resize_timer.timeout.connect(self._emit_resize_geometry)
         self._apply_flags()
         self._build()
         self._apply_style()
@@ -161,29 +247,19 @@ class StickyWindow(QWidget):
         if self._pinned:
             flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
-        # 2026/09/24 変更 ---＞
         self.setWindowIcon(app_icon())
-        # <--- 2026/09/24 変更
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 6, 8, 6)
         root.setSpacing(4)
 
-        # self._bar = QWidget()
-        # self._bar.setFixedHeight(36)
-        # 2026/09/23 変更 ---＞
         self._bar = HeaderBar()
-        self._bar.released.connect(lambda: self.geometryChanged.emit(self.guid))
+        self._bar.released.connect(self._on_header_released)
         self._bar.doubleClicked.connect(lambda: self.openRequested.emit(self.guid))
-        # <--- 2026/09/23 変更
         bar_layout = QHBoxLayout(self._bar)
         bar_layout.setContentsMargins(0, 0, 0, 0)
         bar_layout.setSpacing(4)
-
-        # self.drag_handle = DragHandle()
-        # self.drag_handle.released.connect(lambda: self.geometryChanged.emit(self.guid))
-        # bar_layout.addWidget(self.drag_handle)
 
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("タイトル")
@@ -193,24 +269,16 @@ class StickyWindow(QWidget):
         self.title_edit.textChanged.connect(self._on_title_changed)
         bar_layout.addWidget(self.title_edit, 1)
 
-        # 2026/09/24 変更 ---＞
         self.arrange_button = QPushButton("整列")
         self.arrange_button.clicked.connect(lambda: self.arrangeRequested.emit(self.guid))
         bar_layout.addWidget(self.arrange_button)
-        # <--- 2026/09/24 変更
 
         self.color_button = QPushButton("色")
         self.color_button.setFixedWidth(36)
         self.color_button.clicked.connect(self._cycle_color)
         bar_layout.addWidget(self.color_button)
 
-        # self.pin_button = QPushButton("最前面")
-        # 2026/09/23 変更 ---＞
-        # self.pin_button = QPushButton("最前面解除" if self._pinned else "最前面")
-        # <--- 2026/09/23 変更
-        # 2026/09/23 変更 ---＞
         self.pin_button = QPushButton("最前面")
-        # <--- 2026/09/23 変更
         self.pin_button.setCheckable(True)
         self.pin_button.setChecked(self._pinned)
         self.pin_button.clicked.connect(self._toggle_pin)
@@ -219,10 +287,6 @@ class StickyWindow(QWidget):
         self.close_button = QPushButton("閉じる")
         self.close_button.clicked.connect(lambda: self.closeRequested.emit(self.guid))
         bar_layout.addWidget(self.close_button)
-        # 2026/09/23 変更 ---＞
-        # for button in (self.color_button, self.pin_button, self.close_button):
-        #     button.setCursor(Qt.CursorShape.ArrowCursor)
-        # 2026/09/24 変更 ---＞
         for button in (self.arrange_button, self.color_button, self.pin_button, self.close_button):
             button.setCursor(Qt.CursorShape.ArrowCursor)
         self._header_buttons = (
@@ -232,8 +296,6 @@ class StickyWindow(QWidget):
             self.close_button,
         )
         self._set_header_buttons_visible(False)
-        # <--- 2026/09/24 変更
-        # <--- 2026/09/23 変更
         root.addWidget(self._bar)
 
         self.banner = QLabel()
@@ -246,16 +308,15 @@ class StickyWindow(QWidget):
         self.pull_button.clicked.connect(lambda: self.pullRequested.emit(self.guid))
         root.addWidget(self.pull_button)
 
-        self.body_edit = QTextEdit()
+        self.body_edit = NoteBodyEdit()
         self.body_edit.setPlaceholderText("メモ")
         self.body_edit.setFont(QFont("Yu Gothic UI", 10))
         self.body_edit.textChanged.connect(self._emit_edited)
+        self.body_edit.urlClicked.connect(self._on_body_url_clicked)
         root.addWidget(self.body_edit, 1)
-        # 2026/09/24 変更 ---＞
         for widget in (self, self._bar, self.title_edit, self.body_edit):
             widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             widget.customContextMenuRequested.connect(self._popup_main_menu)
-        # <--- 2026/09/24 変更
 
         grip_row = QHBoxLayout()
         grip_row.addStretch(1)
@@ -263,43 +324,38 @@ class StickyWindow(QWidget):
         grip_row.addWidget(self._grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
         root.addLayout(grip_row)
 
+    def _on_header_released(self) -> None:
+        self.cancel_pending_geometry()
+        self.geometryChanged.emit(self.guid)
+
+    def _emit_resize_geometry(self) -> None:
+        self.geometryChanged.emit(self.guid)
+
+    def flush_geometry(self) -> None:
+        if hasattr(self, "_resize_timer") and self._resize_timer.isActive():
+            self._resize_timer.stop()
+            self.geometryChanged.emit(self.guid)
+
+    def cancel_pending_geometry(self) -> None:
+        if hasattr(self, "_resize_timer") and self._resize_timer.isActive():
+            self._resize_timer.stop()
+
+    def _on_body_url_clicked(self, url: str) -> None:
+        QDesktopServices.openUrl(QUrl(url))
+        self.urlClicked.emit(url)
+
     def _set_header_buttons_visible(self, visible: bool) -> None:
         for button in self._header_buttons:
             button.setVisible(visible)
 
     def enterEvent(self, event):
         self._set_header_buttons_visible(True)
-        # # 2026/09/24 変更 ---＞
-        # if self._updated:
-        #     self._updated = False
-        #     self._apply_style()
-        # # <--- 2026/09/24 変更
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._set_header_buttons_visible(False)
         super().leaveEvent(event)
 
-    # def _apply_style(self) -> None:
-    #     background, foreground = COLORS[self._color]
-    #     self.setStyleSheet(
-    #         f"""
-    #         QWidget#stickyRoot {{
-    #             background: {background};
-    #             color: {foreground};
-    #             border: 1px solid rgba(0, 0, 0, 90);
-    #         }}
-    #         ...
-    #         """
-    #     )
-    # 2026/09/24 変更 ---＞
-    # def mark_updated(self) -> None:
-    #     self._updated = True
-    #     self._flicker_on = True
-    #     self._flicker_elapsed = 0
-    #     self._apply_style()
-    #     self._flicker_timer.start()
-    # 2026/09/24 変更 ---＞
     def mark_updated(self, seconds: float = 5) -> None:
         self._updated = True
         self._flicker_on = True
@@ -325,18 +381,14 @@ class StickyWindow(QWidget):
         self._flicker_on = False
         self._apply_style()
         self.updateNoticeFinished.emit(self.guid)
-    # <--- 2026/09/24 変更
 
     def _apply_style(self) -> None:
         background, foreground = COLORS[self._color]
-        # border = "3px solid #e07000" if self._updated else "1px solid rgba(0, 0, 0, 90)"
-        # 2026/09/24 変更 ---＞
         border = (
             "3px solid #e07000"
             if self._updated and self._flicker_on
             else "1px solid rgba(0, 0, 0, 90)"
         )
-        # <--- 2026/09/24 変更
         self.setStyleSheet(
             f"""
             QWidget#stickyRoot {{
@@ -360,14 +412,18 @@ class StickyWindow(QWidget):
             }}
             """
         )
-    # <--- 2026/09/24 変更
+
+    def _build_context_menu(self) -> QMenu:
+        menu = QMenu(self)
+        menu.addAction("メインフォームを開く", lambda: self.mainRequested.emit(self.guid))
+        menu.addAction("新規作成", lambda: self.newNoteRequested.emit(self.guid))
+        return menu
 
     def _popup_main_menu(self, pos) -> None:
         widget = self.sender()
         if not isinstance(widget, QWidget):
             widget = self
-        menu = QMenu(self)
-        menu.addAction("メインフォームを開く", lambda: self.mainRequested.emit(self.guid))
+        menu = self._build_context_menu()
         menu.exec(widget.mapToGlobal(pos))
 
     def note_title(self) -> str:
@@ -385,24 +441,11 @@ class StickyWindow(QWidget):
         self.title_edit.blockSignals(False)
         self.body_edit.blockSignals(False)
 
-    # def set_read_only(self, message: str) -> None:
-    #     self.title_edit.setReadOnly(True)
-    #     self.body_edit.setReadOnly(True)
-    #     self.banner.setText(message)
-    #     self.banner.show()
-    # 2026/09/23 変更 ---＞
-    # def set_read_only(self, message: str) -> None:
-    #     self.title_edit.setReadOnly(True)
-    #     self.body_edit.setReadOnly(True)
-    #     self.banner.hide()
-    # <--- 2026/09/23 変更
-    # 2026/09/23 変更 ---＞
     def set_read_only(self, message: str) -> None:
         self.title_edit.setReadOnly(True)
         self.body_edit.setReadOnly(True)
         self.title_edit.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.banner.hide()
-    # <--- 2026/09/23 変更
 
     def set_rich(self, rich: bool) -> None:
         self._rich = rich
@@ -431,48 +474,6 @@ class StickyWindow(QWidget):
     def color(self) -> str:
         return self._color
 
-    # def set_pinned(self, pinned: bool) -> None:
-    #     if pinned == self._pinned:
-    #         self.pin_button.setChecked(pinned)
-    #         return
-    #     self._pinned = pinned
-    #     self.pin_button.setChecked(pinned)
-    #     self._apply_flags()
-    #     if self.isVisible():
-    #         self.show()
-    # 2026/09/23 変更 ---＞
-    # def set_pinned(self, pinned: bool) -> None:
-    #     was_visible = self.isVisible()
-    #     geometry = self.geometry()
-    #     self._pinned = pinned
-    #     self.pin_button.setChecked(pinned)
-    #     if pinned == self._pinned and self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint == (
-    #         Qt.WindowType.WindowStaysOnTopHint if pinned else Qt.WindowType.Widget
-    #     ):
-    #         pass
-    #     self._apply_flags()
-    #     self.setGeometry(geometry)
-    #     if was_visible:
-    #         self.show()
-    #         if pinned:
-    #             self.raise_()
-    #             self.activateWindow()
-    # <--- 2026/09/23 変更
-    # 2026/09/23 変更 ---＞
-    # def set_pinned(self, pinned: bool) -> None:
-    #     self.pin_button.setText("最前面解除" if pinned else "最前面")
-    #     self.pin_button.setChecked(pinned)
-    #     if pinned == self._pinned:
-    #         return
-    #     was_visible = self.isVisible()
-    #     geometry = self.geometry()
-    #     self._pinned = pinned
-    #     self._apply_flags()
-    #     self.setGeometry(geometry)
-    #     if was_visible:
-    #         self.show()
-    # <--- 2026/09/23 変更
-    # 2026/09/23 変更 ---＞
     def set_pinned(self, pinned: bool) -> None:
         self.pin_button.setChecked(pinned)
         if pinned == self._pinned:
@@ -484,14 +485,11 @@ class StickyWindow(QWidget):
         self.setGeometry(geometry)
         if was_visible:
             self.show()
-    # <--- 2026/09/23 変更
 
     def pinned(self) -> bool:
         return self._pinned
 
     def place(self, x: int | None, y: int | None, width: int | None, height: int | None, index: int) -> None:
-        from PySide6.QtWidgets import QApplication
-
         screen = self.screen() or QApplication.primaryScreen()
         area = screen.availableGeometry()
         width = width or 300
@@ -507,7 +505,12 @@ class StickyWindow(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.geometryChanged.emit(self.guid)
+        if hasattr(self, "_resize_timer"):
+            self._resize_timer.start()
+
+    def closeEvent(self, event):
+        self.flush_geometry()
+        super().closeEvent(event)
 
     def _emit_edited(self) -> None:
         self.edited.emit(self.guid)

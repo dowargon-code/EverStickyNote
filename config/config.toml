@@ -14,3 +14,7 @@ flicker_seconds = 5
 
 # 非表示だった付箋を、点滅が終わったあと再び閉じます。
 close_after_flicker = true
+
+# 新規作成したノートが取り込まれる Evernote 側のデフォルトノートブック名です（例: "0. Inbox"）。
+# 表示するノートブック（notebooks）に含まれていない場合でも、このアプリから新規作成したノートだけを検知して付箋表示します。
+default_notebook = ""

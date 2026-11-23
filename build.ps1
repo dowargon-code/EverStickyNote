@@ -1,4 +1,5 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 # EverStickyNote をビルドして dist\ に配布物を作る（このフォルダの .venv の Python で）
 #   dist\EverStickyNote\            EverStickyNote.exe、config.toml（config\ から）、README.md、LICENSE、THIRD_PARTY_NOTICES.md
@@ -27,7 +28,7 @@ $Assets = Join-Path $ProjectDir "src\everstickynote\assets"
 
 Invoke-Checked @("-m", "pip", "install", "--upgrade", "pyinstaller")
 Invoke-Checked @("-m", "pip", "install", "--upgrade", "-r", "requirements.txt")
-Invoke-Checked @("-m", "pip", "install", "--no-deps", "-e", ".")
+Invoke-Checked @("-m", "pip", "install", "--no-build-isolation", "--no-deps", "-e", ".")
 Invoke-Checked @("-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
     "--name", $AppName, "--paths", "src",
     "--icon", (Join-Path $Assets "app-icon.ico"),

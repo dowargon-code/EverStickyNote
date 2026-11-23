@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -161,3 +162,31 @@ class LocalStore:
         state = self.get_note_state(guid)
         state.last_usn = usn
         self.save_note_state(state)
+
+    def get_tracked_created_notes(self) -> set[str]:
+        raw = self.get_setting("tracked_created_notes", "[]") or "[]"
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return set()
+        if not isinstance(data, list):
+            return set()
+        return {item for item in data if isinstance(item, str) and item}
+
+    def set_tracked_created_notes(self, note_ids: set[str]) -> None:
+        cleaned = sorted({item for item in note_ids if isinstance(item, str) and item})
+        self.set_setting("tracked_created_notes", json.dumps(cleaned, ensure_ascii=False))
+
+    def add_tracked_created_note(self, note_id: str) -> None:
+        if not note_id:
+            return
+        tracked = self.get_tracked_created_notes()
+        if note_id not in tracked:
+            tracked.add(note_id)
+            self.set_tracked_created_notes(tracked)
+
+    def remove_tracked_created_note(self, note_id: str) -> None:
+        tracked = self.get_tracked_created_notes()
+        if note_id in tracked:
+            tracked.discard(note_id)
+            self.set_tracked_created_notes(tracked)

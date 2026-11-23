@@ -49,6 +49,17 @@ class LocalStoreTests(unittest.TestCase):
         self.assertFalse(self.store.get_note_state("note-1").is_open)
         self.assertEqual(self.store.get_note_state("note-1").color, "blue")
 
+    def test_tracked_created_notes_round_trip(self):
+        self.assertEqual(self.store.get_tracked_created_notes(), set())
+        self.store.add_tracked_created_note("c1")
+        self.store.add_tracked_created_note("c2")
+        self.store.add_tracked_created_note("c1")
+        self.assertEqual(self.store.get_tracked_created_notes(), {"c1", "c2"})
+        self.store.remove_tracked_created_note("c1")
+        self.assertEqual(self.store.get_tracked_created_notes(), {"c2"})
+        self.store.set_tracked_created_notes({"a", "b"})
+        self.assertEqual(self.store.get_tracked_created_notes(), {"a", "b"})
+
 
 if __name__ == "__main__":
     unittest.main()

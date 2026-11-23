@@ -2,12 +2,13 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QEventLoop, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QEventLoop, QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QTextEdit
 
 from everstickynote.evernote_client import EvernoteClient
 from everstickynote.local_store import LocalStore
@@ -158,6 +159,177 @@ class StickyWindowTests(unittest.TestCase):
         self.assertTrue(window.pinned())
         self.assertTrue(window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
         self.assertEqual(window.pin_button.text(), "最前面")
+        window.close()
+
+    def test_clicking_urls_in_read_only_body_opens_them_and_drag_select_does_not(self):
+        window = StickyWindow("note-1")
+        window.set_read_only("読み取り専用")
+        window.set_content(
+            "リンク",
+            "Web: https://example.com/a?x=1\nApp: evernote:///view/1/s1/n1/nb\n空白",
+        )
+        window.resize(400, 260)
+        window.show()
+        QApplication.processEvents()
+        self.assertIsInstance(window.body_edit, QTextEdit)
+        self.assertIn("https://example.com/a?x=1", window.note_text())
+
+        def point_for(substring: str, offset: int = 1) -> QPoint:
+            cursor = window.body_edit.textCursor()
+            idx = window.body_edit.toPlainText().index(substring) + offset
+            cursor.setPosition(idx)
+            return window.body_edit.cursorRect(cursor).center()
+
+        opened: list[str] = []
+        with mock.patch(
+            "everstickynote.ui.sticky_window.QDesktopServices.openUrl",
+            side_effect=lambda qurl: opened.append(qurl.toString()) or True,
+        ):
+            web_pos = point_for("https://example.com/a?x=1", 4)
+            viewport = window.body_edit.viewport()
+            window.body_edit.mouseMoveEvent(
+                QMouseEvent(
+                    QEvent.Type.MouseMove,
+                    web_pos,
+                    viewport.mapToGlobal(web_pos),
+                    Qt.MouseButton.NoButton,
+                    Qt.MouseButton.NoButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+            )
+            self.assertEqual(viewport.cursor().shape(), Qt.CursorShape.PointingHandCursor)
+
+            window.body_edit.mousePressEvent(
+                QMouseEvent(
+                    QEvent.Type.MouseButtonPress,
+                    web_pos,
+                    viewport.mapToGlobal(web_pos),
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+            )
+            window.body_edit.mouseReleaseEvent(
+                QMouseEvent(
+                    QEvent.Type.MouseButtonRelease,
+                    web_pos,
+                    viewport.mapToGlobal(web_pos),
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.NoButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+            )
+
+            app_pos = point_for("evernote:///view/1/s1/n1/nb", 4)
+            window.body_edit.mousePressEvent(
+                QMouseEvent(
+                    QEvent.Type.MouseButtonPress,
+                    app_pos,
+                    viewport.mapToGlobal(app_pos),
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+            )
+            window.body_edit.mouseReleaseEvent(
+                QMouseEvent(
+                    QEvent.Type.MouseButtonRelease,
+                    app_pos,
+                    viewport.mapToGlobal(app_pos),
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.NoButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+            )
+
+            # Dragging across text should select without opening the link
+            end_pos = point_for("空白")
+            window.body_edit.mousePressEvent(
+                QMouseEvent(
+                    QEvent.Type.MouseButtonPress,
+                    web_pos,
+                    viewport.mapToGlobal(web_pos),
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+            )
+            window.body_edit.mouseMoveEvent(
+                QMouseEvent(
+                    QEvent.Type.MouseMove,
+                    end_pos,
+                    viewport.mapToGlobal(end_pos),
+                    Qt.MouseButton.NoButton,
+                    Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+            )
+            window.body_edit.mouseReleaseEvent(
+                QMouseEvent(
+                    QEvent.Type.MouseButtonRelease,
+                    end_pos,
+                    viewport.mapToGlobal(end_pos),
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.NoButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+            )
+
+            # Blank space should restore IBeamCursor and not open anything
+            window.body_edit.mouseMoveEvent(
+                QMouseEvent(
+                    QEvent.Type.MouseMove,
+                    end_pos,
+                    viewport.mapToGlobal(end_pos),
+                    Qt.MouseButton.NoButton,
+                    Qt.MouseButton.NoButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+            )
+            self.assertEqual(viewport.cursor().shape(), Qt.CursorShape.IBeamCursor)
+
+        self.assertEqual(
+            opened,
+            ["https://example.com/a?x=1", "evernote:///view/1/s1/n1/nb"],
+        )
+        window.close()
+
+    def test_resize_debounces_geometry_changed_and_flushes_on_close_or_drag_release(self):
+        window = StickyWindow("note-1")
+        window.show()
+        QApplication.processEvents()
+        window.cancel_pending_geometry()
+
+        emitted: list[str] = []
+        window.geometryChanged.connect(emitted.append)
+
+        window.resize(320, 260)
+        window.resize(340, 270)
+        window.resize(360, 280)
+        QApplication.processEvents()
+        self.assertEqual(emitted, [])
+        self.assertTrue(window._resize_timer.isActive())
+
+        wait_until(lambda: len(emitted) == 1)
+        self.assertEqual(emitted, ["note-1"])
+
+        # Closing while debounce is active should flush immediately
+        window.resize(380, 300)
+        QApplication.processEvents()
+        self.assertTrue(window._resize_timer.isActive())
+        window.close()
+        self.assertEqual(emitted, ["note-1", "note-1"])
+
+    def test_sticky_context_menu_includes_new_note_action(self):
+        window = StickyWindow("note-1")
+        requested: list[str] = []
+        window.newNoteRequested.connect(requested.append)
+        menu = window._build_context_menu()
+        actions = {action.text(): action for action in menu.actions()}
+        self.assertIn("メインフォームを開く", actions)
+        self.assertIn("新規作成", actions)
+        actions["新規作成"].trigger()
+        self.assertEqual(requested, ["note-1"])
         window.close()
 
 

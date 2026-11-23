@@ -1,13 +1,16 @@
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PySide6.QtCore import QUrl
 
 from everstickynote.local_notes import (
     LocalEvernote,
     LocalEvernoteError,
+    cleanup_stale_snapshots,
     display_text,
     display_title,
     evernote_app_url,
@@ -105,6 +108,43 @@ class LocalNoteTextTests(unittest.TestCase):
         data = b"\x01" + "牛乳を買う".encode() + b"\x00customNoteStyle\x00" + "明日".encode()
         self.assertEqual(extract_dat_text(data), "牛乳を買う\n明日")
 
+    def test_dat_text_keeps_single_words_and_urls_while_dropping_noise(self):
+        chunks = [
+            b"TODO",
+            b"hello",
+            b"ABC123",
+            b"v1.2.0",
+            b"iPhone",
+            b"macOS",
+            b"https://example.com/path?x=1",
+            b"http://localhost:8080/test",
+            b"evernote:///view/9580249/s86/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/ffffffff-1111-2222-3333-444444444444",
+            b"marginBottom",
+            b"textAlign",
+            b"fontSize",
+            b"en-note",
+            b"default style",
+            b"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            b"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+            b"{}",
+        ]
+        data = b"\x00".join(chunks)
+        extracted = extract_dat_text(data).splitlines()
+        self.assertEqual(
+            extracted,
+            [
+                "TODO",
+                "hello",
+                "ABC123",
+                "v1.2.0",
+                "iPhone",
+                "macOS",
+                "https://example.com/path?x=1",
+                "http://localhost:8080/test",
+                "evernote:///view/9580249/s86/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/ffffffff-1111-2222-3333-444444444444",
+            ],
+        )
+
 
 class LocalEvernoteTests(unittest.TestCase):
     def setUp(self):
@@ -138,6 +178,61 @@ class LocalEvernoteTests(unittest.TestCase):
             self.reader.get_note("n3")
         from_dat = self.reader.get_note("abc123ghi")
         self.assertEqual(from_dat.text, "ローカル本文")
+
+    def test_cleanup_stale_snapshots_removes_dead_and_unowned_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            pid = os.getpid()
+            stale_self = temp_dir / f"eversticky-{pid}-100.sqlite"
+            stale_self_wal = temp_dir / f"eversticky-{pid}-100.sqlite-wal"
+            stale_dead = temp_dir / "eversticky-99999999-200.sqlite"
+            stale_dead_shm = temp_dir / "eversticky-99999999-200.sqlite-shm"
+            alive_other = temp_dir / "eversticky-88888888-300.sqlite"
+            unrelated = temp_dir / "other.sqlite"
+            for path in (
+                stale_self,
+                stale_self_wal,
+                stale_dead,
+                stale_dead_shm,
+                alive_other,
+                unrelated,
+            ):
+                path.write_text("x", encoding="utf-8")
+
+            removed = cleanup_stale_snapshots(
+                temp_dir,
+                is_alive=lambda p: p == 88888888,
+            )
+            self.assertEqual(removed, 4)
+            self.assertFalse(stale_self.exists())
+            self.assertFalse(stale_self_wal.exists())
+            self.assertFalse(stale_dead.exists())
+            self.assertFalse(stale_dead_shm.exists())
+            self.assertTrue(alive_other.exists())
+            self.assertTrue(unrelated.exists())
+
+    def test_open_cleans_stale_snapshots_and_preserves_other_active_readers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            stale = temp_dir / f"eversticky-{os.getpid()}-111.sqlite"
+            stale.write_text("old", encoding="utf-8")
+            with mock.patch("everstickynote.local_notes.tempfile.gettempdir", return_value=tmp):
+                other = LocalEvernote(self.base)
+                other.open()
+                try:
+                    self.assertFalse(stale.exists())
+                    self.assertIsNotNone(other._snapshot)
+                    self.assertTrue(other._snapshot.exists())
+                    second = LocalEvernote(self.base)
+                    second.open()
+                    try:
+                        self.assertTrue(other._snapshot.exists())
+                        self.assertTrue(second._snapshot.exists())
+                        self.assertNotEqual(other._snapshot, second._snapshot)
+                    finally:
+                        second.close()
+                finally:
+                    other.close()
 
 
 if __name__ == "__main__":

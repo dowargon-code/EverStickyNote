@@ -6,6 +6,7 @@ Nothing is written back.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import shutil
@@ -15,6 +16,19 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+if os.name == "nt":
+    from ctypes import wintypes
+
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _KERNEL32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _KERNEL32.OpenProcess.restype = wintypes.HANDLE
+    _KERNEL32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    _KERNEL32.GetExitCodeProcess.restype = wintypes.BOOL
+    _KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _KERNEL32.CloseHandle.restype = wintypes.BOOL
+else:
+    _KERNEL32 = None
 
 SERVICE_DIR = "https%3A%2F%2Fwww.evernote.com"
 
@@ -75,6 +89,87 @@ def database_stamp(base_dir: Path | None = None) -> tuple:
         stat = path.stat()
         stamps.append((str(path), stat.st_mtime_ns, stat.st_size))
     return tuple(stamps)
+
+
+_SNAPSHOT_NAME_RE = re.compile(r"eversticky-(\d+)-\d+\.sqlite(?:-(?:wal|shm))?$")
+_ACTIVE_SNAPSHOTS_LOCK = threading.Lock()
+_ACTIVE_SNAPSHOTS: set[Path] = set()
+
+
+def _is_process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if _KERNEL32 is not None:
+        process_query_limited_information = 0x1000
+        still_active = 259
+        error_access_denied = 5
+        handle = _KERNEL32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == error_access_denied
+        try:
+            exit_code = wintypes.DWORD()
+            if _KERNEL32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return exit_code.value == still_active
+            return True
+        finally:
+            _KERNEL32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _snapshot_key(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return Path(os.path.abspath(path))
+
+
+def _register_snapshot(path: Path) -> None:
+    key = _snapshot_key(path)
+    with _ACTIVE_SNAPSHOTS_LOCK:
+        _ACTIVE_SNAPSHOTS.add(key)
+
+
+def _unregister_snapshot(path: Path) -> None:
+    key = _snapshot_key(path)
+    with _ACTIVE_SNAPSHOTS_LOCK:
+        _ACTIVE_SNAPSHOTS.discard(key)
+
+
+def cleanup_stale_snapshots(temp_dir: Path | None = None, is_alive=None) -> int:
+    """Remove leftover snapshot files from dead processes or unclosed current-process opens."""
+    directory = temp_dir or Path(tempfile.gettempdir())
+    if not directory.exists():
+        return 0
+    alive_check = is_alive or _is_process_alive
+    removed = 0
+    current_pid = os.getpid()
+    for candidate in directory.glob("eversticky-*.sqlite*"):
+        match = _SNAPSHOT_NAME_RE.fullmatch(candidate.name)
+        if match is None:
+            continue
+        pid = int(match.group(1))
+        base_name = candidate.name.split(".sqlite", 1)[0] + ".sqlite"
+        base_key = _snapshot_key(directory / base_name)
+        if pid == current_pid:
+            with _ACTIVE_SNAPSHOTS_LOCK:
+                if base_key in _ACTIVE_SNAPSHOTS:
+                    continue
+        elif alive_check(pid):
+            continue
+        try:
+            candidate.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def _remove_sqlite_files(path: Path) -> None:
@@ -173,14 +268,24 @@ def _has_cjk(text: str) -> bool:
     )
 
 
+_URL_CHUNK_RE = re.compile(r"^(?:https?://|evernote:///)", re.IGNORECASE)
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_CAMEL_KEY_RE = re.compile(r"[a-z]{2,}(?:[A-Z][a-z0-9]+)+")
+
+
 def _keep_chunk(text: str) -> bool:
     stripped = text.strip()
     if len(stripped) < 2 or stripped.casefold() in _NOISE:
         return False
-    if re.fullmatch(r"[0-9a-f-]{8,}", stripped):
+    if re.fullmatch(r"[0-9a-f-]{8,}", stripped) or _UUID_RE.fullmatch(stripped):
         return False
-    if not _has_cjk(stripped) and not any(char.isspace() for char in stripped):
-        return False
+    if _URL_CHUNK_RE.match(stripped):
+        return True
+    if not _has_cjk(stripped):
+        if not any(char.isalnum() for char in stripped):
+            return False
+        if _CAMEL_KEY_RE.fullmatch(stripped):
+            return False
     words = re.findall(r"[A-Za-z]+", stripped)
     if words and not _has_cjk(stripped) and all(word.casefold() in _NOISE for word in words):
         return False
@@ -342,12 +447,22 @@ class LocalEvernote:
         base = self.base_dir or default_base_dir()
         self._resolved_base = base
         source = find_database(base)
+        cleanup_stale_snapshots()
         destination = (
             Path(tempfile.gettempdir()) / f"eversticky-{os.getpid()}-{time.time_ns()}.sqlite"
         )
-        snapshot_database(source, destination)
-        connection = sqlite3.connect(destination, check_same_thread=False)
-        connection.row_factory = sqlite3.Row
+        _register_snapshot(destination)
+        connection: sqlite3.Connection | None = None
+        try:
+            snapshot_database(source, destination)
+            connection = sqlite3.connect(destination, check_same_thread=False)
+            connection.row_factory = sqlite3.Row
+        except Exception:
+            if connection is not None:
+                connection.close()
+            _unregister_snapshot(destination)
+            _remove_sqlite_files(destination)
+            raise
         with self._lock:
             previous = self._conn
             previous_path = self._snapshot
@@ -356,15 +471,9 @@ class LocalEvernote:
         if previous is not None:
             previous.close()
         if previous_path is not None:
+            _unregister_snapshot(previous_path)
             _remove_sqlite_files(previous_path)
-    # <--- 2026/09/23 変更
 
-    # def close(self) -> None:
-    #     with self._lock:
-    #         if self._conn is not None:
-    #             self._conn.close()
-    #             self._conn = None
-    # 2026/09/23 変更 ---＞
     def close(self) -> None:
         with self._lock:
             if self._conn is not None:
@@ -373,8 +482,8 @@ class LocalEvernote:
             snapshot = self._snapshot
             self._snapshot = None
         if snapshot is not None:
+            _unregister_snapshot(snapshot)
             _remove_sqlite_files(snapshot)
-    # <--- 2026/09/23 変更
 
     def list_notebooks(self) -> list[LocalNotebook]:
         rows = self._query(

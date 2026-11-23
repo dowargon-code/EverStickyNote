@@ -2,16 +2,22 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QEventLoop, QPointF, Qt, QTimer
+from PySide6.QtCore import QEvent, QEventLoop, QPointF, QRect, Qt, QTimer
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from everstickynote.local_notes import LocalEvernoteError, LocalNote, LocalNoteSummary, LocalNotebook
 from everstickynote.local_store import LocalStore
-from everstickynote.ui.local_window import LocalMainWindow
+from everstickynote.ui.local_window import (
+    ALL_NOTEBOOKS_ID,
+    LocalMainWindow,
+    NewNoteDialog,
+    SettingsDialog,
+)
 from everstickynote.ui.sticky_window import arrange_positions
 
 
@@ -47,6 +53,9 @@ def wait_until(predicate, timeout_ms=3000):
 class FakeReader:
     def __init__(self):
         self.bodies = {"n1": "本文です", "secret": "見えない"}
+        self.titles = {"n1": "題", "secret": "秘密"}
+        self.note_notebooks = {"n1": "nb", "secret": "other"}
+        self.notebooks = [LocalNotebook("nb", "仕事"), LocalNotebook("other", "個人")]
         self.removed: set[str] = set()
 
     def open(self):
@@ -56,21 +65,24 @@ class FakeReader:
         return None
 
     def list_notebooks(self):
-        return [LocalNotebook("nb", "仕事"), LocalNotebook("other", "個人")]
+        return list(self.notebooks)
 
     def list_notes(self, notebook_id):
-        if notebook_id == "other":
-            notes = [LocalNoteSummary("secret", "秘密", notebook_id)]
-        else:
-            notes = [LocalNoteSummary("n1", "題", notebook_id)]
-        return [note for note in notes if note.id not in self.removed]
+        return [
+            LocalNoteSummary(note_id, self.titles.get(note_id, "題"), notebook_id)
+            for note_id, owner in self.note_notebooks.items()
+            if owner == notebook_id and note_id not in self.removed
+        ]
 
     def get_note(self, note_id):
         if note_id in self.removed or note_id not in self.bodies:
             raise LocalEvernoteError("ノートが見つかりません")
-        if note_id == "secret":
-            return LocalNote(note_id, "秘密", self.bodies.get(note_id, "見えない"), "other")
-        return LocalNote(note_id, "題", self.bodies.get(note_id, "本文です"), "nb")
+        return LocalNote(
+            note_id,
+            self.titles.get(note_id, "題"),
+            self.bodies[note_id],
+            self.note_notebooks.get(note_id, "nb"),
+        )
 
     def note_app_url(self, note_id):
         return f"evernote:///view/1/s1/{note_id}/nb"
@@ -89,6 +101,7 @@ class LocalWindowTests(unittest.TestCase):
         self.position_path = Path(self._dir.name) / "position.toml"
         self.reader = FakeReader()
         self.opened_urls: list[str] = []
+        self.opened_enex: list[Path] = []
         self.windows: list[LocalMainWindow] = []
         self._stamp_value = 0
         self.startup_calls: list[bool] = []
@@ -104,6 +117,7 @@ class LocalWindowTests(unittest.TestCase):
             stamp=lambda: self._stamp_value,
             startup_apply=self.startup_calls.append,
             quit_on_exit=lambda: None,
+            enex_opener=self.opened_enex.append,
         )
         self.windows.append(window)
         return window
@@ -384,6 +398,264 @@ class LocalWindowTests(unittest.TestCase):
         slots = arrange_positions([(first.width(), first.height()), (second.width(), second.height())], rect)
         self.assertEqual((first.x(), first.y()), slots[0])
         self.assertEqual((second.x(), second.y()), slots[1])
+
+    def test_watch_caches_config_parsing_until_file_changes(self):
+        wait_until(lambda: self.window.note_list.count() == 1 and not self.window._threads)
+        with mock.patch("everstickynote.ui.local_window.load_config", wraps=__import__("everstickynote.notebook_config", fromlist=["load_config"]).load_config) as spy:
+            self.window._watch()
+            self.window._watch()
+            self.window._watch()
+            self.assertEqual(spy.call_count, 0)
+
+            self.config_path.write_text('notebooks = ["仕事"]\nwatch_seconds = 5\n', encoding="utf-8")
+            self.window._watch()
+            self.assertEqual(spy.call_count, 1)
+            self.assertEqual(self.window._watch_seconds, 5.0)
+            self.assertEqual(self.window._timer.interval(), 5000)
+
+    def test_resize_debounce_flushes_when_closing_sticky_or_main(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        sticky = self.window._windows["n1"]
+        sticky.resize(410, 310)
+        QApplication.processEvents()
+        self.assertTrue(sticky._resize_timer.isActive())
+        self.window.close_sticky("n1")
+        self.assertFalse(sticky._resize_timer.isActive())
+        self.assertEqual(self.window._layout.notes["n1"].width, 410)
+        self.assertEqual(self.window._layout.notes["n1"].height, 310)
+
+        self.window.open_note("n1")
+        sticky.resize(450, 330)
+        QApplication.processEvents()
+        self.window._force_close = True
+        self.window.close()
+        self.assertEqual(self.window._layout.notes["n1"].width, 450)
+        self.assertEqual(self.window._layout.notes["n1"].height, 330)
+
+    def test_multiple_notebooks_offer_all_option_and_monitor_across_notebooks(self):
+        wait_until(lambda: self.window.note_list.count() == 1 and not self.window._threads)
+        self.config_path.write_text('notebooks = ["仕事", "個人"]\n', encoding="utf-8")
+        self.window.reload()
+        wait_until(lambda: self.window.note_list.count() == 2 and not self.window._threads)
+        self.assertEqual(self.window.notebook_combo.count(), 3)
+        self.assertEqual(self.window.notebook_combo.itemText(0), "すべてのノートブック")
+        self.assertEqual(self.window.notebook_combo.itemData(0), ALL_NOTEBOOKS_ID)
+        self.assertIn("n1", self.window._windows)
+        self.assertIn("secret", self.window._windows)
+
+        # Switch combo filter to 仕事 only; 個人 ("secret") must still stay monitored & flicker on update
+        self.window.notebook_combo.setCurrentIndex(1)
+        wait_until(lambda: self.window.note_list.count() == 1 and not self.window._threads)
+        self.window._hide_sticky("secret")
+        self.assertNotIn("secret", self.window._windows)
+
+        self.reader.bodies["secret"] = "個人ノート更新"
+        self._stamp_value = 2
+        self.window._watch()
+        wait_until(lambda: "secret" in self.window._windows and not self.window._threads)
+        self.assertEqual(self.window._windows["secret"].note_text(), "個人ノート更新")
+        self.assertIn("3px solid", self.window._windows["secret"].styleSheet())
+
+    def test_arrange_stickies_uses_pressed_sticky_monitor(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        self.window.show_note(LocalNote("n2", "二つ目", "本文", "nb"))
+        first = self.window._windows["n1"]
+        second = self.window._windows["n2"]
+        second_monitor = QRect(1920, 0, 1920, 1080)
+
+        class FakeScreen:
+            def availableGeometry(self):
+                return second_monitor
+
+        with mock.patch.object(second, "screen", return_value=FakeScreen()):
+            second.arrange_button.click()
+
+        slots = arrange_positions(
+            [(second.width(), second.height()), (first.width(), first.height())],
+            (second_monitor.x(), second_monitor.y(), second_monitor.width(), second_monitor.height()),
+        )
+        self.assertEqual((second.x(), second.y()), slots[0])
+        self.assertEqual((first.x(), first.y()), slots[1])
+        self.assertEqual(second.x() + second.width(), second_monitor.x() + second_monitor.width() - 8)
+
+    def test_settings_dialog_keeps_missing_notebooks_and_applies_immediately(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        self.config_path.write_text(
+            '# 設定コメント\nnotebooks = ["仕事", "行方不明"]\nwatch_seconds = 2\ndefault_notebook = "未検出Inbox"\n',
+            encoding="utf-8",
+        )
+        self.window.reload()
+        wait_until(lambda: not self.window._threads)
+        config = self.window._load_app_config(force=True)
+        dialog = SettingsDialog(self.window._all_notebooks, config, parent=self.window)
+        names = [
+            dialog.notebook_list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(dialog.notebook_list.count())
+        ]
+        self.assertEqual(names, ["仕事", "個人", "行方不明"])
+        default_items = [
+            dialog.default_notebook_combo.itemData(i)
+            for i in range(dialog.default_notebook_combo.count())
+        ]
+        self.assertEqual(default_items, ["", "仕事", "個人", "未検出Inbox"])
+        self.assertEqual(dialog.default_notebook(), "未検出Inbox")
+        self.assertIn("デフォルトのノートブック", dialog.notice_label.text())
+
+        # Check "個人" (index 1), keep "行方不明" checked, and set default_notebook to "個人"
+        dialog.notebook_list.item(1).setCheckState(Qt.CheckState.Checked)
+        dialog.watch_spin.setValue(4.0)
+        dialog.flicker_spin.setValue(1.5)
+        dialog.close_after_flicker_check.setChecked(False)
+        dialog.default_notebook_combo.setCurrentIndex(2)
+        self.assertEqual(dialog.notebook_list.item(1).checkState(), Qt.CheckState.Unchecked)
+        self.assertNotIn("個人", dialog.selected_notebooks())
+
+        self.window.apply_settings(
+            notebooks=dialog.selected_notebooks(),
+            watch_seconds=dialog.watch_seconds(),
+            flicker_seconds=dialog.flicker_seconds(),
+            close_after_flicker=dialog.close_after_flicker(),
+            default_notebook=dialog.default_notebook(),
+        )
+        wait_until(lambda: not self.window._threads)
+        self.assertNotIn("secret", self.window._windows)
+        self.assertEqual(self.window._watch_seconds, 4.0)
+        self.assertEqual(self.window._flicker_seconds, 1.5)
+        self.assertFalse(self.window._close_after_flicker)
+        self.assertEqual(self.window._default_notebook_name, "個人")
+        saved_text = self.config_path.read_text(encoding="utf-8")
+        self.assertIn("# 設定コメント", saved_text)
+        self.assertIn('"行方不明"', saved_text)
+        self.assertIn('default_notebook = "個人"', saved_text)
+
+        # Even if config.toml manually lists "個人" in BOTH notebooks and default_notebook,
+        # default_notebook filtering takes precedence and does NOT show pre-existing "secret"
+        self.window.apply_settings(
+            notebooks=["仕事", "個人"],
+            watch_seconds=4.0,
+            flicker_seconds=1.5,
+            close_after_flicker=False,
+            default_notebook="個人",
+        )
+        wait_until(lambda: not self.window._threads)
+        self.assertNotIn("secret", self.window._windows)
+
+    def test_create_new_note_passes_enex_via_os_and_shows_notice(self):
+        wait_until(lambda: self.window.note_list.count() == 1 and not self.window._threads)
+        written = self.window.create_new_note("テスト題名", "本文1行目\n本文2行目")
+        self.assertIsNotNone(written)
+        self.assertEqual(self.opened_enex, [written])
+        self.assertTrue(written.exists())
+        xml_content = written.read_text(encoding="utf-8")
+        self.assertIn("<title>テスト題名</title>", xml_content)
+        self.assertIn("<div>本文1行目</div><div>本文2行目</div>", xml_content)
+        if written.exists():
+            written.unlink()
+
+    def test_new_note_dialog_shows_notice_and_tray_and_sticky_menus_trigger_it(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        # Notice without default_notebook
+        unset_dialog = NewNoteDialog(default_notebook="", parent=self.window)
+        self.assertIn("設定", unset_dialog.notice_label.text())
+
+        # Notice with default_notebook
+        set_dialog = NewNoteDialog(default_notebook="0. Inbox", parent=self.window)
+        self.assertIn("0. Inbox", set_dialog.notice_label.text())
+        set_dialog.title_edit.setText("ダイアログ題")
+        set_dialog.body_edit.setPlainText("ダイアログ本文")
+        set_dialog.create_button.click()
+        self.assertEqual(set_dialog.result(), QDialog.DialogCode.Accepted)
+
+        # Tray menu includes 新規作成 and triggers open_new_note_dialog
+        self.assertIsNotNone(self.window._tray_menu)
+        tray_actions = {action.text(): action for action in self.window._tray_menu.actions()}
+        self.assertIn("メインフォームを開く", tray_actions)
+        self.assertIn("新規作成", tray_actions)
+        self.assertIn("終了", tray_actions)
+
+        with mock.patch("everstickynote.ui.local_window.NewNoteDialog", return_value=set_dialog):
+            with mock.patch.object(set_dialog, "exec", return_value=QDialog.DialogCode.Accepted):
+                tray_actions["新規作成"].trigger()
+        self.assertEqual(len(self.opened_enex), 1)
+        self.assertIn("<title>ダイアログ題</title>", self.opened_enex[0].read_text(encoding="utf-8"))
+        if self.opened_enex[0].exists():
+            self.opened_enex[0].unlink()
+
+        # Sticky right-click menu includes 新規作成 and triggers open_new_note_dialog
+        sticky = self.window._windows["n1"]
+        sticky_actions = {action.text(): action for action in sticky._build_context_menu().actions()}
+        self.assertIn("新規作成", sticky_actions)
+        with mock.patch("everstickynote.ui.local_window.NewNoteDialog", return_value=set_dialog):
+            with mock.patch.object(set_dialog, "exec", return_value=QDialog.DialogCode.Accepted):
+                sticky_actions["新規作成"].trigger()
+        self.assertEqual(len(self.opened_enex), 2)
+        if self.opened_enex[1].exists():
+            self.opened_enex[1].unlink()
+
+    def test_default_notebook_tracks_only_app_created_notes_across_restart_and_move(self):
+        wait_until(lambda: "n1" in self.window._windows and not self.window._threads)
+        self.window.apply_settings(
+            notebooks=["仕事"],
+            watch_seconds=2.0,
+            flicker_seconds=5.0,
+            close_after_flicker=True,
+            default_notebook="個人",
+        )
+        wait_until(lambda: not self.window._threads)
+
+        # Pre-existing note in default_notebook ("secret") must NOT appear
+        self.assertNotIn("secret", self.window._windows)
+        self.assertEqual(self.window.note_list.count(), 1)
+
+        # Create a new note from the app
+        enex_path = self.window.create_new_note("Inbox新メモ", "新規本文")
+        self.assertIsNotNone(enex_path)
+        if enex_path.exists():
+            enex_path.unlink()
+
+        # Unrelated note AND the created note both appear in default_notebook ("other")
+        self.reader.titles["external"] = "他アプリからのメール"
+        self.reader.bodies["external"] = "無関係"
+        self.reader.note_notebooks["external"] = "other"
+        self.reader.titles["created-1"] = "Inbox新メモ"
+        self.reader.bodies["created-1"] = "新規本文"
+        self.reader.note_notebooks["created-1"] = "other"
+        self._stamp_value = 10
+        self.window._watch()
+        wait_until(lambda: "created-1" in self.window._windows and not self.window._threads)
+
+        # Only created-1 appears; secret and external stay hidden
+        self.assertNotIn("secret", self.window._windows)
+        self.assertNotIn("external", self.window._windows)
+        self.assertEqual(self.window.note_list.count(), 2)
+        self.assertIn("created-1", self.store.get_tracked_created_notes())
+
+        # Save custom geometry and color on created-1, then restart window
+        created_sticky = self.window._windows["created-1"]
+        created_sticky.move(410, 210)
+        created_sticky.resize(350, 250)
+        created_sticky.set_color("blue")
+        self.window._save_geometry("created-1")
+        self.window._force_close = True
+        self.window.close()
+
+        restarted = self._open_window()
+        wait_until(lambda: "created-1" in restarted._windows and not restarted._threads)
+        self.assertNotIn("secret", restarted._windows)
+        self.assertNotIn("external", restarted._windows)
+        restored = restarted._windows["created-1"]
+        self.assertEqual((restored.x(), restored.y(), restored.width(), restored.height()), (410, 210, 350, 250))
+        self.assertEqual(restored.color(), "blue")
+
+        # Move created-1 from default_notebook ("other") to regular notebook ("nb")
+        self.reader.note_notebooks["created-1"] = "nb"
+        self._stamp_value = 11
+        restarted._watch()
+        wait_until(lambda: restarted._watched_stamp == 11 and not restarted._threads)
+        self.assertIn("created-1", restarted._windows)
+        self.assertIs(restarted._windows["created-1"], restored)
+        self.assertEqual((restored.x(), restored.y(), restored.width(), restored.height()), (410, 210, 350, 250))
+        self.assertEqual(restarted._window_notebooks["created-1"], "nb")
 
 if __name__ == "__main__":
     unittest.main()
